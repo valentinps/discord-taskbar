@@ -1034,6 +1034,9 @@ impl App {
             tray::CMD_REAUTHORIZE => self.control.reauthorize(),
             tray::CMD_SETTINGS => self.open_settings(),
             tray::CMD_OPEN_CONFIG => tray::open_folder(&crate::config::config_dir()),
+            // Out of process, so the checks see the machine as a fresh
+            // launch would and a hung provider thread cannot block them.
+            tray::CMD_DOCTOR => self.open_doctor(),
             tray::CMD_QUIT => unsafe {
                 PostQuitMessage(0);
             },
@@ -1074,6 +1077,19 @@ impl App {
     /// The window is modeless and lives on this thread, so the widget carries
     /// on working while it is open — and a change can be seen the moment it is
     /// saved rather than after a restart.
+    /// Launch a second copy with `--doctor`.
+    ///
+    /// A separate process on purpose: the report should describe what a fresh
+    /// launch would find, and running it here would block the message loop
+    /// for as long as the Discord handshake takes.
+    fn open_doctor(&mut self) {
+        let Ok(exe) = std::env::current_exe() else {
+            self.notice = Some("Could not locate the app".to_string());
+            return;
+        };
+        let _ = std::process::Command::new(exe).arg("--doctor").spawn();
+    }
+
     fn open_settings(&mut self) {
         let (config, _) = Config::load_or_create();
         settings::open(

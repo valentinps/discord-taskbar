@@ -507,6 +507,39 @@ This exists because every interface change used to need a live call to look at,
 which made some paths awkward to check and others only reasonable about. It is
 the fastest way to work on anything visual.
 
+## When nothing shows up
+
+The widget takes up no space when there is nothing to say — not in a call,
+Discord not running, no credentials yet. That is right in normal use and
+unhelpful when something is wrong, because every failure looks the same from
+outside: an empty taskbar.
+
+```sh
+discord-taskbar.exe --doctor
+```
+
+or **Diagnostics...** in the tray menu. It runs every check the app makes at
+startup and shows the result in a window you can copy or save. It changes
+nothing — no OAuth prompt, no config rewrite, no widget — and works while the
+app is already running, because it runs ahead of the single-instance check.
+
+It covers where the exe is running from, whether `config.json` parses, whether
+the client id looks like a client id, whether a usable token is cached and
+which scopes it has, whether a `discord-ipc-N` pipe is answering, and — the
+useful one — it performs a real RPC handshake. That validates the client id
+against Discord without triggering an authorisation prompt, and reports which
+account is signed in, which is how you catch the most common mistake: using
+somebody else's client id. Discord restricts the `rpc` scope to the
+application's **owner**, so a client id copied from a friend can never work.
+
+Finally it reports every taskbar found, with its geometry, and whether
+`ReBarWindow32` and `TrayNotifyWnd` are present inside `Shell_TrayWnd` — their
+absence is the signature of a stock Windows 11 taskbar, which is not the
+classic hierarchy this relies on.
+
+The client secret is never printed, only measured, so the report is safe to
+paste into a chat window.
+
 ## Diagnostics
 
 | | |

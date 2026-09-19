@@ -30,6 +30,7 @@ pub const CMD_SETTINGS: usize = 106;
 pub const CMD_RECONNECT: usize = 103;
 pub const CMD_RESTART: usize = 104;
 pub const CMD_QUIT: usize = 105;
+pub const CMD_DOCTOR: usize = 107;
 
 /// One command per monitor in the "Show on" submenu, offset by index.
 pub const CMD_MONITOR_BASE: usize = 300;
@@ -179,6 +180,12 @@ impl Tray {
                 MF_STRING,
                 CMD_OPEN_CONFIG,
                 windows::core::w!("Open config folder"),
+            );
+            let _ = AppendMenuW(
+                menu,
+                MF_STRING,
+                CMD_DOCTOR,
+                windows::core::w!("Diagnostics..."),
             );
             let _ = AppendMenuW(
                 menu,

@@ -26,6 +26,15 @@ fn main() {
     // installer hands over after copying the files.
     let settings = std::env::args().any(|arg| arg == "--settings");
 
+    // `--doctor` reports why nothing is showing and exits. It runs before the
+    // single-instance check on purpose: the usual reason for running it is
+    // that something is wrong, and refusing to start because a copy is
+    // already up would be exactly the wrong answer.
+    if std::env::args().any(|arg| arg == "--doctor") {
+        ui::doctor::run();
+        return;
+    }
+
     // A restart launches the replacement before the old process has exited, so
     // the new one waits for it — otherwise the single-instance mutex below
     // would see the outgoing process and this one would quit immediately.

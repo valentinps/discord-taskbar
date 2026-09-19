@@ -10,6 +10,7 @@
 //!   when it restarts, which is fine: the host simply builds another.
 
 pub mod controls;
+pub mod doctor;
 pub mod elements;
 pub mod host;
 pub mod menu;
