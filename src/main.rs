@@ -1,0 +1,83 @@
+//! Entry point.
+//!
+//! A single named mutex keeps one instance per user session; a second launch
+//! exits quietly rather than stacking widgets on the taskbar.
+
+#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+
+use windows::core::w;
+use windows::Win32::Foundation::{CloseHandle, GetLastError, ERROR_ALREADY_EXISTS};
+use windows::Win32::System::Threading::{
+    CreateMutexW, OpenProcess, WaitForSingleObject, PROCESS_SYNCHRONIZE,
+};
+
+use discord_taskbar::config::Config;
+use discord_taskbar::ui;
+
+/// Give up rather than hang forever if the old process will not exit.
+const RESTART_TIMEOUT_MS: u32 = 10_000;
+
+fn main() {
+    // `--demo` drives the interface from a synthetic call instead of Discord,
+    // so UI work does not require being in a voice channel. It runs under its
+    // own mutex so it can sit alongside the real instance.
+    let demo = std::env::args().any(|arg| arg == "--demo");
+
+    // A restart launches the replacement before the old process has exited, so
+    // the new one waits for it — otherwise the single-instance mutex below
+    // would see the outgoing process and this one would quit immediately.
+    if let Some(pid) = wait_for_argument() {
+        wait_for_exit(pid);
+    }
+
+    if already_running(demo) {
+        return;
+    }
+
+    let (config, warning) = Config::load_or_create();
+    if let Some(warning) = &warning {
+        eprintln!("discord-taskbar: {warning}");
+    }
+
+    if let Err(error) = ui::host::run(config, warning, demo) {
+        eprintln!("discord-taskbar: {error}");
+        std::process::exit(1);
+    }
+}
+
+/// `--wait-for <pid>`, passed by a restart.
+fn wait_for_argument() -> Option<u32> {
+    let mut args = std::env::args().skip(1);
+    while let Some(arg) = args.next() {
+        if arg == "--wait-for" {
+            return args.next()?.parse().ok();
+        }
+    }
+    None
+}
+
+fn wait_for_exit(pid: u32) {
+    unsafe {
+        let Ok(process) = OpenProcess(PROCESS_SYNCHRONIZE, false, pid) else {
+            // Already gone, which is the outcome we wanted anyway.
+            return;
+        };
+        let _ = WaitForSingleObject(process, RESTART_TIMEOUT_MS);
+        let _ = CloseHandle(process);
+    }
+}
+
+fn already_running(demo: bool) -> bool {
+    unsafe {
+        let name = if demo {
+            w!(r"Local\DiscordTaskbarSingleInstanceDemo")
+        } else {
+            w!(r"Local\DiscordTaskbarSingleInstance")
+        };
+        // Leaked deliberately: the handle must outlive main to hold the name.
+        match CreateMutexW(None, true, name) {
+            Ok(_) => GetLastError() == ERROR_ALREADY_EXISTS,
+            Err(_) => false,
+        }
+    }
+}

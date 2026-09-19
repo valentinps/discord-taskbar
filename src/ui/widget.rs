@@ -1,0 +1,371 @@
+//! The visible window that lives inside the taskbar.
+//!
+//! It holds no state of its own: the host owns everything, and this window
+//! just forwards input. That keeps recreation after an explorer restart cheap
+//! — we throw the `HWND` away and make another.
+
+use std::sync::atomic::{AtomicBool, AtomicIsize, Ordering};
+
+use windows::core::w;
+use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, POINT, WPARAM};
+use windows::Win32::Graphics::Gdi::{BeginPaint, EndPaint, ScreenToClient, PAINTSTRUCT};
+use windows::Win32::System::LibraryLoader::GetModuleHandleW;
+// WM_MOUSELEAVE lives in UI::Controls, not WindowsAndMessaging — without
+// this import it silently becomes a catch-all binding in the match below.
+use windows::Win32::UI::Controls::WM_MOUSELEAVE;
+use windows::Win32::UI::Input::KeyboardAndMouse::{TrackMouseEvent, TME_LEAVE, TRACKMOUSEEVENT};
+use windows::Win32::UI::WindowsAndMessaging::*;
+
+use super::{
+    WidgetInput, WM_APP_WIDGET_CLICK, WM_APP_WIDGET_CONTEXT, WM_APP_WIDGET_CURSOR,
+    WM_APP_WIDGET_HOVER, WM_APP_WIDGET_LEAVE, WM_APP_WIDGET_MIDDLE, WM_APP_WIDGET_PAINT,
+    WM_APP_WIDGET_WHEEL,
+};
+
+const CLASS_NAME: windows::core::PCWSTR = w!("DiscordTaskbarWidget");
+
+/// The host window, so input can be forwarded to whoever owns the state.
+static HOST: AtomicIsize = AtomicIsize::new(0);
+
+/// Whether `TrackMouseEvent` is currently armed for the widget.
+static TRACKING: AtomicBool = AtomicBool::new(false);
+
+pub fn set_host(hwnd: HWND) {
+    HOST.store(hwnd.0 as isize, Ordering::Relaxed);
+}
+
+fn host() -> Option<HWND> {
+    match HOST.load(Ordering::Relaxed) {
+        0 => None,
+        raw => Some(HWND(raw as *mut std::ffi::c_void)),
+    }
+}
+
+pub fn register_class() -> bool {
+    unsafe {
+        let instance = match GetModuleHandleW(None) {
+            Ok(h) => h,
+            Err(_) => return false,
+        };
+
+        let class = WNDCLASSEXW {
+            cbSize: std::mem::size_of::<WNDCLASSEXW>() as u32,
+            style: CS_HREDRAW | CS_VREDRAW,
+            lpfnWndProc: Some(wndproc),
+            hInstance: instance.into(),
+            hCursor: LoadCursorW(None, IDC_ARROW).unwrap_or_default(),
+            lpszClassName: CLASS_NAME,
+            ..Default::default()
+        };
+
+        // A non-zero atom means success; a duplicate registration is harmless.
+        RegisterClassExW(&class) != 0 || class_already_registered()
+    }
+}
+
+/// `ERROR_CLASS_ALREADY_EXISTS` — harmless, and expected if we re-register
+/// after an explorer restart.
+unsafe fn class_already_registered() -> bool {
+    windows::Win32::Foundation::GetLastError()
+        == windows::Win32::Foundation::WIN32_ERROR(1410)
+}
+
+/// Create the widget as a top-level window, to be adopted by the taskbar.
+///
+/// It is deliberately *not* created with the taskbar as its parent: passing a
+/// cross-process `HWND` to `CreateWindowExW` with `WS_CHILD` fails here. The
+/// two-step create-then-`SetParent` dance is what TrafficMonitor does, and it
+/// is what actually works.
+pub fn create() -> Option<HWND> {
+    unsafe {
+        let instance = GetModuleHandleW(None).ok()?;
+
+        let hwnd = CreateWindowExW(
+            WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE,
+            CLASS_NAME,
+            w!("Discord Status"),
+            WS_POPUP,
+            0,
+            0,
+            1,
+            1,
+            None,
+            None,
+            Some(instance.into()),
+            None,
+        )
+        .ok()?;
+
+        if hwnd.is_invalid() {
+            return None;
+        }
+
+        Some(hwnd)
+    }
+}
+
+/// Adopt the taskbar as our parent. Returns false if the shell refused, in
+/// which case the caller should leave the widget floating on top instead.
+pub fn attach(hwnd: HWND, parent: HWND) -> bool {
+    unsafe {
+        if SetParent(hwnd, Some(parent)).is_err() {
+            return false;
+        }
+
+        // SetParent alone does not change the style bits; without WS_CHILD the
+        // window keeps being treated as a popup and clips against the desktop.
+        SetWindowLongPtrW(
+            hwnd,
+            GWL_STYLE,
+            (WS_CHILD | WS_CLIPSIBLINGS | WS_VISIBLE).0 as isize,
+        );
+
+        let _ = SetWindowPos(
+            hwnd,
+            Some(HWND_TOP),
+            0,
+            0,
+            0,
+            0,
+            SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_FRAMECHANGED,
+        );
+
+        true
+    }
+}
+
+/// Keep the floating fallback above the taskbar.
+pub fn make_topmost(hwnd: HWND) {
+    unsafe {
+        let _ = SetWindowPos(
+            hwnd,
+            Some(HWND_TOPMOST),
+            0,
+            0,
+            0,
+            0,
+            SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE,
+        );
+    }
+}
+
+/// Ask the widget to repaint from the host's canvas.
+pub fn invalidate(hwnd: HWND) {
+    unsafe {
+        let _ = windows::Win32::Graphics::Gdi::InvalidateRect(Some(hwnd), None, false);
+    }
+}
+
+/// Show without stealing focus from whatever the user is doing.
+pub fn show(hwnd: HWND) {
+    unsafe {
+        let _ = ShowWindow(hwnd, SW_SHOWNA);
+    }
+}
+
+/// Hide entirely, so an idle widget occupies no taskbar space and paints
+/// nothing at all.
+pub fn hide(hwnd: HWND) {
+    unsafe {
+        let _ = ShowWindow(hwnd, SW_HIDE);
+    }
+}
+
+pub fn destroy(hwnd: HWND) {
+    unsafe {
+        let _ = DestroyWindow(hwnd);
+    }
+}
+
+/// Move and resize without activating, keeping us above the task button strip.
+pub fn set_geometry(hwnd: HWND, x: i32, y: i32, width: i32, height: i32) {
+    unsafe {
+        let _ = SetWindowPos(
+            hwnd,
+            Some(HWND_TOP),
+            x,
+            y,
+            width,
+            height,
+            SWP_NOACTIVATE,
+        );
+    }
+}
+
+/// A mouse position packed into an `LPARAM`, sign-extended — a widget can be
+/// hit at negative client coordinates. The packing is the same whether the
+/// message reports client or screen coordinates.
+fn client_point(lparam: LPARAM) -> POINT {
+    let raw = lparam.0 as i32;
+    POINT {
+        x: ((raw & 0xFFFF) << 16) >> 16,
+        y: (((raw >> 16) & 0xFFFF) << 16) >> 16,
+    }
+}
+
+/// Hand an input event to the host.
+///
+/// The payload is boxed and the pointer travels in `wparam`; the host reclaims
+/// it. Packing a position into an `LPARAM` was fine with one widget, but with
+/// one per monitor the source window has to travel too, and that does not fit.
+fn post_input(hwnd: HWND, message: u32, point: POINT, notches: i32) {
+    let Some(host) = host() else {
+        return;
+    };
+
+    let boxed = Box::into_raw(Box::new(WidgetInput {
+        widget: hwnd,
+        point,
+        notches,
+    }));
+
+    let posted =
+        unsafe { PostMessageW(Some(host), message, WPARAM(boxed as usize), LPARAM(0)).is_ok() };
+
+    if !posted {
+        drop(unsafe { Box::from_raw(boxed) });
+    }
+}
+
+/// Same, but synchronous, for the questions that need an answer back.
+fn send_input(hwnd: HWND, message: u32, point: POINT, notches: i32) -> isize {
+    let Some(host) = host() else {
+        return 0;
+    };
+
+    let boxed = Box::into_raw(Box::new(WidgetInput {
+        widget: hwnd,
+        point,
+        notches,
+    }));
+
+    unsafe {
+        SendMessageW(host, message, Some(WPARAM(boxed as usize)), Some(LPARAM(0))).0
+    }
+}
+
+extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
+    unsafe {
+        match msg {
+            // Report as client area so clicks reach us rather than the taskbar.
+            WM_NCHITTEST => LRESULT(HTCLIENT as isize),
+
+            WM_LBUTTONUP => {
+                post_input(hwnd, WM_APP_WIDGET_CLICK, client_point(lparam), 0);
+                LRESULT(0)
+            }
+
+            WM_RBUTTONUP => {
+                post_input(hwnd, WM_APP_WIDGET_CONTEXT, client_point(lparam), 0);
+                LRESULT(0)
+            }
+
+            // Mouse tracking has to be re-armed after every WM_MOUSELEAVE, so
+            // this asks for it on each move. Windows ignores a redundant
+            // request for a window it is already tracking.
+            WM_MOUSEMOVE => {
+                // Arm once per entry rather than on every move: tracking ends
+                // when WM_MOUSELEAVE fires, and that is the only time it needs
+                // re-arming.
+                if !TRACKING.swap(true, Ordering::Relaxed) {
+                    let mut tracking = TRACKMOUSEEVENT {
+                        cbSize: std::mem::size_of::<TRACKMOUSEEVENT>() as u32,
+                        dwFlags: TME_LEAVE,
+                        hwndTrack: hwnd,
+                        dwHoverTime: 0,
+                    };
+                    let _ = TrackMouseEvent(&mut tracking);
+                }
+
+                post_input(hwnd, WM_APP_WIDGET_HOVER, client_point(lparam), 0);
+                LRESULT(0)
+            }
+
+            WM_MOUSELEAVE => {
+                TRACKING.store(false, Ordering::Relaxed);
+                post_input(hwnd, WM_APP_WIDGET_LEAVE, POINT::default(), 0);
+                LRESULT(0)
+            }
+
+            WM_MBUTTONUP => {
+                post_input(hwnd, WM_APP_WIDGET_MIDDLE, client_point(lparam), 0);
+                LRESULT(0)
+            }
+
+            // The wheel reports in screen coordinates, unlike the button
+            // messages, so convert before handing it on.
+            WM_MOUSEWHEEL => {
+                let notches = (wparam.0 >> 16) as i16 as i32 / WHEEL_DELTA as i32;
+                // The wheel reports screen coordinates, unlike the button
+                // messages, so convert before handing it on.
+                let mut point = client_point(lparam);
+                let _ = ScreenToClient(hwnd, &mut point);
+                post_input(hwnd, WM_APP_WIDGET_WHEEL, point, notches);
+                LRESULT(0)
+            }
+
+            // A hand over anything clickable, so the interactive parts of the
+            // widget advertise themselves.
+            WM_SETCURSOR => {
+                let mut point = POINT::default();
+                let interactive = if GetCursorPos(&mut point).is_ok() {
+                    let _ = ScreenToClient(hwnd, &mut point);
+                    send_input(hwnd, WM_APP_WIDGET_CURSOR, point, 0) != 0
+                } else {
+                    false
+                };
+
+                if interactive {
+                    if let Ok(hand) = LoadCursorW(None, IDC_HAND) {
+                        SetCursor(Some(hand));
+                        return LRESULT(1);
+                    }
+                }
+                DefWindowProcW(hwnd, msg, wparam, lparam)
+            }
+
+            // The shell does not composite a layered *child* window, so the
+            // widget paints itself opaquely over the taskbar's own colour.
+            WM_PAINT => {
+                let mut ps = PAINTSTRUCT::default();
+                let dc = BeginPaint(hwnd, &mut ps);
+
+                let mut painted = false;
+                if !dc.is_invalid() {
+                    if let Some(host) = host() {
+                        // Synchronous: the DC is only valid until EndPaint.
+                        painted = SendMessageW(
+                            host,
+                            WM_APP_WIDGET_PAINT,
+                            Some(WPARAM(dc.0 as usize)),
+                            // Which widget is painting: there is one per
+                            // taskbar once multiple monitors are in play.
+                            Some(LPARAM(hwnd.0 as isize)),
+                        )
+                        .0 != 0;
+                    }
+                }
+                let _ = EndPaint(hwnd, &ps);
+
+                // The host refuses to paint while it is mid-refresh, which
+                // happens because SetWindowPos delivers WM_PAINT synchronously.
+                // EndPaint has already validated the region, so without this the
+                // frame would simply be lost, leaving the widget showing stale
+                // state until something else happened to invalidate it.
+                if !painted {
+                    let _ = windows::Win32::Graphics::Gdi::InvalidateRect(
+                        Some(hwnd),
+                        None,
+                        false,
+                    );
+                }
+
+                LRESULT(0)
+            }
+
+            WM_ERASEBKGND => LRESULT(1),
+
+            _ => DefWindowProcW(hwnd, msg, wparam, lparam),
+        }
+    }
+}

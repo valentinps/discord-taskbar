@@ -1,0 +1,15 @@
+/target
+**/*.rs.bk
+
+# Local secrets and runtime state — never commit
+config.json
+config.local.json
+secrets.json
+*.token
+/.cache
+
+# Diagnostic output
+render_probe.bin
+layout_probe.bmp
+icon_probe.bmp
+glyph_probe.bmp
