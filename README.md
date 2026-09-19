@@ -260,28 +260,43 @@ With `sort_by_speaking` on, and more people than `max_avatars`, speakers are
 kept first, then you, then everyone else alphabetically — so the cut falls on
 people who aren't talking. With it off the order is fixed and alphabetical.
 
-### The background, and why it is not really transparent
+### The background
 
-A layered *child* window is not composited by the shell — `UpdateLayeredWindow`
-simply no-ops on one — so the widget cannot show the taskbar through itself.
-What it does instead is sample the taskbar's own colour beside itself and paint
-that, which comes to the same thing visually. Leaving `background` at
-`#00000000` means only that sampled colour shows.
+There are two ways the widget can sit on the taskbar, and they differ in
+exactly one thing: whether it is *inside* the bar or *above* it.
 
-Sampling takes the most common colour across a row of the bar. That is exact on
-a plain taskbar, and it deliberately demands a clear majority so that a
-notification or an overlapping window cannot become the widget's background.
+**Inside (default).** The widget is a `WS_CHILD` of `Shell_TrayWnd`. The shell
+does not composite layered child windows — `UpdateLayeredWindow` silently does
+nothing on one — so it cannot show anything through itself. Instead it samples
+the taskbar's colour beside itself and paints that, which looks the same on a
+plain bar. In return it is clipped, hidden and z-ordered by the shell along
+with the taskbar, for free.
 
-A translucent, blurred or gradient taskbar has no majority colour — every pixel
-differs slightly — so it falls back to the average of what it sampled. That is
-an approximation, but it is the right colour family and it follows the wallpaper
-and accent colour. Before that fallback existed, this case gave up and left the
-backdrop at its initial value, which was black: a solid taskbar worked perfectly
-and a translucent one got an opaque black box that never adapted to anything.
+Sampling takes the most common colour across a row of the bar, and demands a
+clear majority before believing it, so a notification or an overlapping window
+cannot become the widget's background. A translucent, blurred or gradient bar
+has no majority colour — every pixel differs slightly — so it falls back to the
+average of what it sampled. That is an approximation of something that is not
+one colour, and it is the best this mode can do. Before the fallback existed
+this case gave up and left the backdrop black.
 
-When sampling cannot give a good answer, set **Behind widget**
-(`taskbar_background`) to a fixed colour and it is used verbatim. `--doctor`
-reports the colour it resolves to and which of the two routes produced it.
+**Above (`transparent`, "See-through background").** The widget stays top-level,
+layered and topmost, and presents through `UpdateLayeredWindow`. The taskbar
+genuinely shows through, translucency, gradient, wallpaper and all, because the
+widget is composited over it by DWM rather than painting a copy of it.
+
+The cost is that the shell no longer manages it. A floating window is not
+hidden along with the taskbar, so it would sit on top of a full-screen game
+like a sticker; the anchor timer watches for a foreground window that covers a
+whole monitor and stands the widget down while there is one.
+
+The setting is fixed at window-creation time — it decides the extended style
+and whether the taskbar is our parent — so changing it rebuilds the widget
+windows rather than adjusting them.
+
+`--doctor` reports the colour the sampling resolves to and which of the two
+routes produced it. **Behind widget** (`taskbar_background`) overrides it with
+a fixed colour, for when neither is right.
 
 ### Making it look built in
 

@@ -16,6 +16,14 @@ fn parse(text: &str, fallback: Color) -> Color {
 pub struct Appearance {
     /// Widget background, `#RRGGBB` or `#RRGGBBAA`.
     pub background: String,
+    /// Float above the taskbar as a layered window instead of living inside
+    /// it, so the taskbar genuinely shows through.
+    ///
+    /// The trade is real: a floating window is not clipped or hidden by the
+    /// shell along with the taskbar, so it has to be told to get out of the
+    /// way of full-screen windows, and it sits above everything else.
+    pub transparent: bool,
+
     /// What to paint behind the widget, where the background is transparent.
     ///
     /// Empty means sample the taskbar, which is what makes the widget vanish
@@ -84,6 +92,7 @@ impl Default for Appearance {
     fn default() -> Self {
         Appearance {
             background: "#2B2D31D8".to_string(),
+            transparent: false,
             taskbar_background: String::new(),
             text: "#DBDEE1".to_string(),
             text_dim: "#949BA4".to_string(),
@@ -126,6 +135,7 @@ pub struct Theme {
     pub background: Color,
     /// `None` means sample the taskbar instead.
     pub taskbar_background: Option<Color>,
+    pub transparent: bool,
     pub text: Color,
     pub text_dim: Color,
     pub speaking: Color,
@@ -192,6 +202,7 @@ impl From<&Appearance> for Theme {
         let defaults = Appearance::default();
         Theme {
             background: parse(&a.background, parse(&defaults.background, Color::rgb(43, 45, 49))),
+            transparent: a.transparent,
             taskbar_background: if a.taskbar_background.trim().is_empty() {
                 None
             } else {
