@@ -1,0 +1,13 @@
+# Link the MSVC C runtime statically.
+#
+# By default a Rust MSVC build imports VCRUNTIME140.dll, which ships in the
+# Visual C++ Redistributable rather than in Windows. Plenty of machines have
+# it because a game or Discord itself installed it, but it is not guaranteed
+# — and when it is missing the process dies at load time, before main runs,
+# so the app simply never appears.
+#
+# That is unacceptable for something handed to someone else as an installer,
+# and bundling the redistributable to fix it would be far more weight than
+# the ~100 KB this costs.
+[target.'cfg(target_os = "windows")']
+rustflags = ["-C", "target-feature=+crt-static"]

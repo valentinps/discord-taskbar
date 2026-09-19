@@ -124,6 +124,13 @@ The uninstaller is a copy of setup itself: installing writes `uninstall.exe`
 alongside the application, and running it stages a copy into `%TEMP%` first,
 because a program cannot delete the folder it is running from.
 
+Both binaries link the MSVC C runtime statically, so they import nothing that
+does not ship with Windows. A default Rust MSVC build pulls in
+`VCRUNTIME140.dll` from the Visual C++ Redistributable, and on a machine
+without it the process dies at load time, before `main` runs — the app just
+never appears, with nothing to go on. That is a bad failure to hand somebody
+along with an installer, and the static CRT costs about 100 KB.
+
 No installer toolchain is involved — no Inno Setup, no NSIS, no WiX. It is a
 second Rust binary in `installer/`, which embeds the first with `include_bytes!`.
 Cargo cannot express "build A, then embed A into B", which is why the two-step
