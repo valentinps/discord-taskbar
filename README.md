@@ -260,6 +260,29 @@ With `sort_by_speaking` on, and more people than `max_avatars`, speakers are
 kept first, then you, then everyone else alphabetically — so the cut falls on
 people who aren't talking. With it off the order is fixed and alphabetical.
 
+### The background, and why it is not really transparent
+
+A layered *child* window is not composited by the shell — `UpdateLayeredWindow`
+simply no-ops on one — so the widget cannot show the taskbar through itself.
+What it does instead is sample the taskbar's own colour beside itself and paint
+that, which comes to the same thing visually. Leaving `background` at
+`#00000000` means only that sampled colour shows.
+
+Sampling takes the most common colour across a row of the bar. That is exact on
+a plain taskbar, and it deliberately demands a clear majority so that a
+notification or an overlapping window cannot become the widget's background.
+
+A translucent, blurred or gradient taskbar has no majority colour — every pixel
+differs slightly — so it falls back to the average of what it sampled. That is
+an approximation, but it is the right colour family and it follows the wallpaper
+and accent colour. Before that fallback existed, this case gave up and left the
+backdrop at its initial value, which was black: a solid taskbar worked perfectly
+and a translucent one got an opaque black box that never adapted to anything.
+
+When sampling cannot give a good answer, set **Behind widget**
+(`taskbar_background`) to a fixed colour and it is used verbatim. `--doctor`
+reports the colour it resolves to and which of the two routes produced it.
+
 ### Making it look built in
 
 To drop the panel look and have the status sit directly on the taskbar, make

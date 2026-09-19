@@ -157,6 +157,13 @@ static FIELDS: &[Field] = &[
     },
     Field {
         section: "Colours",
+        label: "Behind widget",
+        kind: Kind::Text,
+        get: |c| c.appearance.taskbar_background.clone(),
+        set: |c, v| c.appearance.taskbar_background = v.trim().to_string(),
+    },
+    Field {
+        section: "Colours",
         label: "Text",
         kind: Kind::Text,
         get: |c| c.appearance.text.clone(),

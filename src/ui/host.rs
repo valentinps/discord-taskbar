@@ -349,10 +349,15 @@ impl App {
         // Only when something could have changed it: this is by far the most
         // expensive thing a refresh does.
         if self.surfaces[index].backdrop_stale {
-            if let Some(sampled) =
+            // An explicit colour wins: sampling cannot succeed on a
+            // translucent bar, and being able to say "it is this colour" is
+            // the difference between a widget that blends in and a black box.
+            if let Some(fixed) = self.theme.taskbar_background {
+                self.surfaces[index].backdrop = fixed;
+            } else if let Some(sampled) =
                 taskbar::sample_background(&info, (screen_x, screen_y, width, height))
             {
-                self.surfaces[index].backdrop = Color::from_colorref(sampled);
+                self.surfaces[index].backdrop = Color::from_colorref(sampled.color());
             }
             self.surfaces[index].backdrop_stale = false;
             self.surfaces[index].backdrop_checked = Some(std::time::Instant::now());
