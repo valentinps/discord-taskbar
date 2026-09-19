@@ -26,6 +26,7 @@ pub const TRAY_ID: u32 = 1;
 pub const CMD_FOCUS_DISCORD: usize = 100;
 pub const CMD_REAUTHORIZE: usize = 101;
 pub const CMD_OPEN_CONFIG: usize = 102;
+pub const CMD_SETTINGS: usize = 106;
 pub const CMD_RECONNECT: usize = 103;
 pub const CMD_RESTART: usize = 104;
 pub const CMD_QUIT: usize = 105;
@@ -166,6 +167,12 @@ impl Tray {
                 MF_STRING,
                 CMD_REAUTHORIZE,
                 windows::core::w!("Re-authorize with Discord"),
+            );
+            let _ = AppendMenuW(
+                menu,
+                MF_STRING,
+                CMD_SETTINGS,
+                windows::core::w!("Settings..."),
             );
             let _ = AppendMenuW(
                 menu,

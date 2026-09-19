@@ -1,3 +1,8 @@
+[workspace]
+# The installer is a second binary that embeds the first, so it must build
+# after it. `make-installer.sh` sequences the two.
+members = ["installer"]
+
 [package]
 name = "discord-taskbar"
 version = "0.1.0"

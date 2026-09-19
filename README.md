@@ -102,7 +102,34 @@ Everything is event-driven: the app blocks on Discord's named pipe and repaints
 only when something actually changes. The only polling is a 1-second timer that
 re-checks the taskbar's position, which is what TrafficMonitor does too.
 
-## Setup
+## Install
+
+For anyone who just wants to run it, `make-installer.sh` produces a single
+self-contained `dist/DiscordTaskbarSetup.exe`. It embeds the application, walks
+through creating the Discord application below, and installs per-user under
+`%LOCALAPPDATA%\Programs\Discord Taskbar` — so it never asks for administrator
+rights.
+
+```sh
+./make-installer.sh
+```
+
+Setup offers to start the widget at sign-in, add Start menu and desktop
+shortcuts, and registers an entry in **Settings › Apps**, so it uninstalls the
+way any other program does. Removing it leaves your `config.json` alone unless
+you tick the box that says otherwise, so reinstalling picks up where you left
+off.
+
+The uninstaller is a copy of setup itself: installing writes `uninstall.exe`
+alongside the application, and running it stages a copy into `%TEMP%` first,
+because a program cannot delete the folder it is running from.
+
+No installer toolchain is involved — no Inno Setup, no NSIS, no WiX. It is a
+second Rust binary in `installer/`, which embeds the first with `include_bytes!`.
+Cargo cannot express "build A, then embed A into B", which is why the two-step
+build lives in a script.
+
+## Setup from source
 
 ### 1. Create a Discord application
 
@@ -122,7 +149,9 @@ process.
 
 ### 2. Configure
 
-Run the app once to create `%APPDATA%\discord-taskbar\config.json`, then fill in:
+The installer asks for both values on its second page and writes them for you.
+Otherwise, open **Settings** from the widget's tray icon and paste them there,
+or edit `%APPDATA%\discord-taskbar\config.json` by hand:
 
 ```json
 {
@@ -153,10 +182,37 @@ everyone else out until it disconnects; and if the app is ever updated to need a
 scope the cached token doesn't have, it re-prompts rather than silently losing
 the capability.
 
-To start it with Windows, put a shortcut to the exe in
-`shell:startup`.
+To start it with Windows, put a shortcut to the exe in `shell:startup` — or let
+the installer add the registry entry for you.
 
 ## Configuration
+
+### The settings window
+
+Right-click the notification-area icon and choose **Settings**, or run
+`discord-taskbar.exe --settings`. Every option in the table below appears there,
+grouped into sections across two columns, with a button that opens the Discord
+developer portal beside the credential fields.
+
+The window is driven by a single declarative table in `src/ui/settings.rs`:
+
+```rust
+struct Field {
+    section: &'static str,
+    label: &'static str,
+    kind: Kind,                    // Toggle | Number | Text | Choice
+    get: fn(&Config) -> String,
+    set: fn(&mut Config, &str),
+}
+```
+
+Adding a setting means adding one row — creating the control, filling it in,
+reading it back and laying it out all follow from `kind`. Saving re-reads the
+file from disk first, so keys the window does not show are preserved rather than
+overwritten with defaults, and changes apply immediately: fonts, icon fonts and
+the avatar cache are rebuilt and every surface repainted without a restart.
+
+### The file
 
 Everything below lives under `"appearance"` in `config.json`. Metrics are in
 96-DPI pixels and are scaled automatically; colours are `#RRGGBB` or

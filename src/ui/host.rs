@@ -26,6 +26,7 @@ use super::elements::{
 };
 use super::render::{Canvas, Color, Font};
 use super::taskbar::{self, Anchor, Edge, TaskbarInfo, DEFAULT_DPI};
+use super::settings;
 use super::theme::{MiddleClick, Theme};
 use super::tray::{self, Tray};
 use super::popup;
@@ -1031,6 +1032,7 @@ impl App {
             tray::CMD_RECONNECT => self.control.reconnect(),
             tray::CMD_RESTART => tray::restart(),
             tray::CMD_REAUTHORIZE => self.control.reauthorize(),
+            tray::CMD_SETTINGS => self.open_settings(),
             tray::CMD_OPEN_CONFIG => tray::open_folder(&crate::config::config_dir()),
             tray::CMD_QUIT => unsafe {
                 PostQuitMessage(0);
@@ -1065,6 +1067,44 @@ impl App {
         if let Some(command) = choice {
             self.on_menu_command(command);
         }
+    }
+
+    /// Open the settings window, applying anything it saves immediately.
+    ///
+    /// The window is modeless and lives on this thread, so the widget carries
+    /// on working while it is open — and a change can be seen the moment it is
+    /// saved rather than after a restart.
+    fn open_settings(&mut self) {
+        let (config, _) = Config::load_or_create();
+        settings::open(
+            &config,
+            Box::new(|edited| {
+                // Runs on the UI thread from the settings window's handler,
+                // where the app is not already borrowed.
+                with_app(|app| app.apply_config(edited));
+            }),
+        );
+    }
+
+    /// Adopt an edited config: persist it, then redraw with it.
+    fn apply_config(&mut self, config: Config) {
+        if let Err(error) = config.save() {
+            self.notice = Some(format!("Could not save config: {error}"));
+            self.notice_expires = Some(std::time::Instant::now() + NOTICE_LINGER);
+        }
+
+        self.theme = Theme::from(&config.appearance);
+
+        // Metrics and colours may all have moved.
+        self.rebuild_fonts();
+        self.icon_fonts.clear();
+        self.images.clear();
+        for surface in &mut self.surfaces {
+            surface.canvas = None;
+            surface.backdrop_stale = true;
+        }
+
+        self.refresh();
     }
 
     /// Turn a display on or off and persist the choice.
@@ -1186,7 +1226,12 @@ fn rects_equal(a: &RECT, b: &RECT) -> bool {
 }
 
 /// Create the windows, start the provider, and pump messages.
-pub fn run(config: Config, warning: Option<String>, demo: bool) -> Result<(), String> {
+pub fn run(
+    config: Config,
+    warning: Option<String>,
+    demo: bool,
+    open_settings: bool,
+) -> Result<(), String> {
     unsafe {
         // Match explorer's awareness so our coordinates agree with the tray's.
         let _ = SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
@@ -1247,6 +1292,19 @@ pub fn run(config: Config, warning: Option<String>, demo: bool) -> Result<(), St
             provider::spawn_demo(ProviderSink::new(host));
         } else {
             provider::spawn_rpc(config.discord.clone(), ProviderSink::new(host), control);
+        }
+
+        // Nothing works without a Discord application, so say so rather than
+        // sitting there doing nothing. The settings window explains how.
+        let needs_setup = !demo && !config.discord.is_complete();
+        if open_settings || needs_setup {
+            with_app(|app| {
+                if needs_setup {
+                    app.notice = Some("Set up Discord - see Settings".to_string());
+                    app.refresh();
+                }
+                app.open_settings();
+            });
         }
 
         SetTimer(Some(host), TIMER_ANCHOR, TIMER_ANCHOR_MS, None);

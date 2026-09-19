@@ -13,3 +13,7 @@ render_probe.bin
 layout_probe.bmp
 icon_probe.bmp
 glyph_probe.bmp
+
+# Built by make-installer.sh, not source
+/installer/payload/*.exe
+/dist

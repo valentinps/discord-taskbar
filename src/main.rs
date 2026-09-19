@@ -22,6 +22,9 @@ fn main() {
     // so UI work does not require being in a voice channel. It runs under its
     // own mutex so it can sit alongside the real instance.
     let demo = std::env::args().any(|arg| arg == "--demo");
+    // `--settings` opens the settings window straight away, which is how the
+    // installer hands over after copying the files.
+    let settings = std::env::args().any(|arg| arg == "--settings");
 
     // A restart launches the replacement before the old process has exited, so
     // the new one waits for it — otherwise the single-instance mutex below
@@ -39,7 +42,7 @@ fn main() {
         eprintln!("discord-taskbar: {warning}");
     }
 
-    if let Err(error) = ui::host::run(config, warning, demo) {
+    if let Err(error) = ui::host::run(config, warning, demo, settings) {
         eprintln!("discord-taskbar: {error}");
         std::process::exit(1);
     }
