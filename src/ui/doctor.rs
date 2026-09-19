@@ -18,9 +18,9 @@ use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::HiDpi::GetDpiForWindow;
 use windows::Win32::UI::WindowsAndMessaging::*;
 
-use crate::config::{cache_dir, config_dir, config_path, Config};
+use crate::config::{cache_dir, config_dir, config_path, Config, Credentials};
 use crate::provider::rpc::oauth;
-use crate::provider::rpc::RpcClient;
+use crate::provider::rpc::{RpcClient, RpcError};
 use crate::ui::controls::{button, child, wide, Place};
 use crate::ui::taskbar;
 
@@ -30,6 +30,12 @@ const ID_COPY: usize = 1;
 const ID_SAVE: usize = 2;
 const ID_CLOSE: usize = 3;
 const ID_REPORT: usize = 4;
+const ID_LOGIN: usize = 5;
+
+/// The sign-in test finished; `wparam` carries a boxed `String`.
+const WM_APP_RESULT: u32 = WM_APP + 1;
+/// The Discord section is ready; `wparam` carries a boxed `String`.
+const WM_APP_DISCOVERED: u32 = WM_APP + 2;
 
 /// Marks used down the left of the report, so it skims.
 const OK: &str = "  ok  ";
@@ -37,17 +43,21 @@ const BAD: &str = " FAIL ";
 const WARN: &str = " warn ";
 const INFO: &str = "      ";
 
-/// Gather the report and show it.
+/// Gather the local checks, show them, then fill in the Discord ones.
 pub fn run() {
-    let report = gather();
-    show(&report);
+    show(&gather_local());
 }
 
-/// Run every check and render the result as plain text.
+/// Everything that can be answered without talking to anything.
 ///
 /// Deliberately one long string rather than a structure: it exists to be read
 /// by a person and pasted into a chat window.
-pub fn gather() -> String {
+///
+/// The Discord section is *not* here. Reaching Discord means a named-pipe
+/// connect and a handshake that waits for a reply, and a tool whose whole job
+/// is to explain a stuck program must never be the thing that hangs. Doing it
+/// up front would have meant no window at all while it waited.
+pub fn gather_local() -> String {
     let mut out = String::new();
     let _ = writeln!(out, "Discord Taskbar {} — diagnostics", env!("CARGO_PKG_VERSION"));
     let _ = writeln!(out, "{}", "=".repeat(62));
@@ -55,17 +65,30 @@ pub fn gather() -> String {
 
     section_app(&mut out);
     section_config(&mut out);
-    section_discord(&mut out);
     section_taskbar(&mut out);
 
-    let _ = writeln!(out);
-    let _ = writeln!(out, "{}", "=".repeat(62));
-    let _ = writeln!(
-        out,
-        "Send this whole report to whoever is helping you. It contains no\n\
-         password and no message content; your client secret is not included."
-    );
+    let _ = writeln!(out, "DISCORD");
+    let _ = writeln!(out, "{INFO}checking...");
     out
+}
+
+/// Convert to CRLF, idempotently.
+///
+/// The report is assembled with `writeln!`, which emits a bare newline. A
+/// Win32 EDIT control does not treat that as a line break at all - it renders
+/// the whole report as a single very long line - and nor does Notepad. Every
+/// point where this text leaves the module goes through here.
+fn to_crlf(text: &str) -> String {
+    text.replace("\r\n", "\n").replace('\n', "\r\n")
+}
+
+/// The closing note, appended once the Discord section has landed.
+fn footer() -> String {
+    format!(
+        "\r\n{}\r\nSend this whole report to whoever is helping you. It contains no\r\n\
+         password and no message content; your client secret is not included.\r\n",
+        "=".repeat(62)
+    )
 }
 
 fn section_app(out: &mut String) {
@@ -101,7 +124,50 @@ fn section_app(out: &mut String) {
         out,
         "{OK}C runtime      linked statically, no redistributable needed"
     );
+
+    // The single most useful line in the report. Every other check can pass
+    // on a machine where the widget has simply never been started, and from
+    // the outside that looks exactly like a broken install.
+    if app_is_running() {
+        let _ = writeln!(out, "{OK}widget         running");
+    } else {
+        let _ = writeln!(
+            out,
+            "{BAD}widget         NOT RUNNING — nothing will ever appear in the"
+        );
+        let _ = writeln!(
+            out,
+            "{INFO}               taskbar until it is started. Launch\n\
+             {INFO}               discord-taskbar.exe from the install folder,\n\
+             {INFO}               or sign out and back in if you asked setup to\n\
+             {INFO}               start it automatically."
+        );
+    }
     let _ = writeln!(out);
+}
+
+/// Whether a copy of the widget is up, by probing the single-instance mutex.
+///
+/// Cheaper and more exact than enumerating processes: it is the very object
+/// that decides whether a second launch is allowed to proceed, so it cannot
+/// disagree with the app about what "already running" means.
+fn app_is_running() -> bool {
+    use windows::Win32::Foundation::CloseHandle;
+    use windows::Win32::System::Threading::{OpenMutexW, SYNCHRONIZATION_ACCESS_RIGHTS};
+
+    // SYNCHRONIZE. Opening for anything more would fail against a mutex
+    // created by another session, and all we need is to know it exists.
+    const SYNCHRONIZE: SYNCHRONIZATION_ACCESS_RIGHTS = SYNCHRONIZATION_ACCESS_RIGHTS(0x0010_0000);
+
+    unsafe {
+        match OpenMutexW(SYNCHRONIZE, false, w!(r"Local\DiscordTaskbarSingleInstance")) {
+            Ok(handle) => {
+                let _ = CloseHandle(handle);
+                true
+            }
+            Err(_) => false,
+        }
+    }
 }
 
 fn section_config(out: &mut String) {
@@ -204,8 +270,6 @@ fn section_config(out: &mut String) {
 }
 
 fn section_discord(out: &mut String) {
-    let _ = writeln!(out, "DISCORD");
-
     // Which pipes answer tells us whether the desktop client is up, without
     // needing to enumerate processes.
     let pipes: Vec<u32> = (0..10)
@@ -433,6 +497,9 @@ fn show(report: &str) {
         let _ = ShowWindow(hwnd, SW_SHOW);
         let _ = SetForegroundWindow(hwnd);
 
+        // Now that there is something on screen, go and ask Discord.
+        probe_discord(hwnd);
+
         let mut message = MSG::default();
         while GetMessageW(&mut message, None, 0, 0).into() {
             if IsDialogMessageW(hwnd, &message).as_bool() {
@@ -454,7 +521,7 @@ fn build(hwnd: HWND, report: &str, scale: &impl Fn(i32) -> i32, font: HFONT) {
     child(
         hwnd,
         w!("EDIT"),
-        report,
+        &to_crlf(report),
         WINDOW_STYLE(
             WS_BORDER.0
                 | WS_VSCROLL.0
@@ -473,29 +540,210 @@ fn build(hwnd: HWND, report: &str, scale: &impl Fn(i32) -> i32, font: HFONT) {
         font,
     );
 
+    // Laid out right to left, because the rightmost button is the one with a
+    // fixed home and the widths differ.
     let y = height - button_h - margin;
     let gap = scale(8);
-    for (index, (label, id)) in [
-        ("Close", ID_CLOSE),
-        ("Save to file\u{2026}", ID_SAVE),
-        ("Copy", ID_COPY),
-    ]
-    .into_iter()
-    .enumerate()
-    {
-        let slot = index as i32 + 1;
+    let mut right = width - margin;
+    for (label, id, w) in [
+        ("Close", ID_CLOSE, button_w),
+        ("Save to file\u{2026}", ID_SAVE, button_w),
+        ("Copy", ID_COPY, button_w),
+        ("Try to sign in now", ID_LOGIN, scale(170)),
+    ] {
         button(
             hwnd,
             label,
             id,
             Place {
-                x: width - margin - button_w * slot - gap * (slot - 1),
+                x: right - w,
                 y,
-                w: button_w,
+                w,
                 h: button_h,
             },
             font,
         );
+        right -= w + gap;
+    }
+}
+
+/// Fill in the Discord section from a worker thread.
+///
+/// Replaces the "checking..." placeholder rather than appending, so the
+/// finished report reads as though it had been gathered in one go.
+fn probe_discord(hwnd: HWND) {
+    let target = hwnd.0 as isize;
+    std::thread::spawn(move || {
+        let mut text = String::new();
+        section_discord(&mut text);
+        text.push_str(&footer());
+
+        let boxed = Box::into_raw(Box::new(text)) as usize;
+        unsafe {
+            let _ = PostMessageW(
+                Some(HWND(target as *mut std::ffi::c_void)),
+                WM_APP_DISCOVERED,
+                WPARAM(boxed),
+                LPARAM(0),
+            );
+        }
+    });
+}
+
+/// Run the real sign-in, on a worker thread, and append what happened.
+///
+/// The handshake in the report above proves only the client id. Authorisation
+/// is a separate exchange that uses the client secret and the registered
+/// redirect URI, and it is where a correctly-created-but-misconfigured
+/// application actually fails — so the only way to diagnose it is to try it.
+fn try_sign_in(hwnd: HWND) {
+    let (config, _) = Config::load_or_create();
+    let credentials = config.discord.clone();
+
+    if !credentials.is_complete() {
+        append(
+            hwnd,
+            &format!("\r\nSIGN-IN TEST\r\n{BAD}cannot try     no client id or secret set\r\n"),
+        );
+        return;
+    }
+
+    unsafe {
+        if let Ok(control) = GetDlgItem(Some(hwnd), ID_LOGIN as i32) {
+            let _ = windows::Win32::UI::Input::KeyboardAndMouse::EnableWindow(control, false);
+        }
+    }
+
+    append(
+        hwnd,
+        &format!(
+            "\r\nSIGN-IN TEST\r\n\
+             {INFO}asking Discord to authorise. Switch to Discord and approve\r\n\
+             {INFO}the prompt; it can open behind the main window.\r\n"
+        ),
+    );
+
+    // HWND is not Send, so carry the raw value across.
+    let target = hwnd.0 as isize;
+    std::thread::spawn(move || {
+        let text = sign_in(&credentials);
+        let boxed = Box::into_raw(Box::new(text)) as usize;
+        unsafe {
+            let _ = PostMessageW(
+                Some(HWND(target as *mut std::ffi::c_void)),
+                WM_APP_RESULT,
+                WPARAM(boxed),
+                LPARAM(0),
+            );
+        }
+    });
+}
+
+fn sign_in(credentials: &Credentials) -> String {
+    let mut client = match RpcClient::connect(&credentials.client_id) {
+        Ok(client) => client,
+        Err(error) => return format!("{BAD}connect        {error}\r\n"),
+    };
+
+    match oauth::login(&mut client, credentials, || {}) {
+        Ok(token) => format!(
+            "{OK}signed in      it worked; token saved\r\n\
+             {INFO}scopes         {}\r\n\
+             {INFO}               Start discord-taskbar.exe and join a voice\r\n\
+             {INFO}               channel — it should appear now.\r\n",
+            token.scope
+        ),
+        Err(error) => explain(&error),
+    }
+}
+
+/// Turn an authorisation failure into something actionable.
+fn explain(error: &RpcError) -> String {
+    let text = error.to_string();
+    let lower = text.to_lowercase();
+    let mut out = format!("{BAD}sign-in        {text}\r\n");
+
+    let advice = if lower.contains("redirect") || lower.contains("invalid_request") {
+        Some(
+            "Discord refused the token exchange. Almost always this means\n\
+             http://localhost is not registered on your application. Open\n\
+             the OAuth2 page, add it under Redirects, and Save Changes.",
+        )
+    } else if lower.contains("invalid_client") {
+        Some(
+            "Discord rejected the client secret. Reset it on the OAuth2\n\
+             page, copy the new one, and paste it into Settings.",
+        )
+    } else if lower.contains("invalid_grant") {
+        Some(
+            "The authorisation code was refused. This is usually the\n\
+             redirect URI differing from the registered one — it must be\n\
+             exactly http://localhost, with no trailing slash.",
+        )
+    } else if lower.contains("denied") || lower.contains("4001") || lower.contains("cancel") {
+        Some(
+            "The prompt was dismissed rather than approved. Run this again\n\
+             and press Authorize in Discord.",
+        )
+    } else if lower.contains("not running") || lower.contains("pipe") {
+        Some("Discord closed midway through. Reopen it and try again.")
+    } else {
+        None
+    };
+
+    if let Some(advice) = advice {
+        for line in advice.lines() {
+            let _ = writeln!(out, "{INFO}               {}\r", line.trim());
+        }
+    }
+    out
+}
+
+/// Swap the "checking..." line for the finished Discord section.
+fn replace_placeholder(hwnd: HWND, text: &str) {
+    DOCTOR.with(|cell| {
+        if let Some(doctor) = cell.borrow_mut().as_mut() {
+            let placeholder = format!("{INFO}checking...
+");
+            if let Some(at) = doctor.report.find(&placeholder) {
+                doctor.report.truncate(at);
+            }
+        }
+    });
+    append(hwnd, text);
+}
+
+/// Add text to the end of the report and scroll to it.
+fn append(hwnd: HWND, text: &str) {
+    let full = DOCTOR.with(|cell| {
+        let mut borrow = cell.borrow_mut();
+        let doctor = borrow.as_mut()?;
+        doctor.report.push_str(text);
+        Some(doctor.report.clone())
+    });
+
+    let Some(full) = full else { return };
+
+    unsafe {
+        let Ok(control) = GetDlgItem(Some(hwnd), ID_REPORT as i32) else {
+            return;
+        };
+        let display = to_crlf(&full);
+        let wide_text = wide(&display);
+        let _ = SetWindowTextW(control, PCWSTR(wide_text.as_ptr()));
+
+        // Park the caret at the end so the new lines are on screen.
+        // windows-rs does not re-export the EM_* messages here.
+        const EM_SETSEL: u32 = 0x00B1;
+        const EM_SCROLLCARET: u32 = 0x00B7;
+        let end = display.chars().count() as isize;
+        let _ = SendMessageW(
+            control,
+            EM_SETSEL,
+            Some(WPARAM(end as usize)),
+            Some(LPARAM(end)),
+        );
+        let _ = SendMessageW(control, EM_SCROLLCARET, Some(WPARAM(0)), Some(LPARAM(0)));
     }
 }
 
@@ -539,7 +787,7 @@ fn copy(hwnd: HWND, report: &str) {
         }
         let _ = EmptyClipboard();
 
-        let text = wide(report);
+        let text = wide(&to_crlf(report));
         let bytes = std::mem::size_of_val(&text[..]);
         if let Ok(handle) = GlobalAlloc(GMEM_MOVEABLE, bytes) {
             let target = GlobalLock(handle);
@@ -559,7 +807,7 @@ fn copy(hwnd: HWND, report: &str) {
 fn save(hwnd: HWND, report: &str) {
     let path = config_dir().join("diagnostics.txt");
     let message = match std::fs::create_dir_all(config_dir())
-        .and_then(|()| std::fs::write(&path, report.replace('\n', "\r\n")))
+        .and_then(|()| std::fs::write(&path, to_crlf(report)))
     {
         Ok(()) => format!("Saved to\n{}", path.display()),
         Err(error) => format!("Could not save:\n{error}"),
@@ -611,10 +859,33 @@ unsafe extern "system" fn wndproc(
             match (id, report) {
                 (ID_COPY, Some(report)) => copy(hwnd, &report),
                 (ID_SAVE, Some(report)) => save(hwnd, &report),
+                (ID_LOGIN, _) => try_sign_in(hwnd),
                 (ID_CLOSE, _) => {
                     let _ = DestroyWindow(hwnd);
                 }
                 _ => {}
+            }
+            LRESULT(0)
+        }
+
+        WM_APP_DISCOVERED => {
+            if wparam.0 != 0 {
+                let text = *Box::from_raw(wparam.0 as *mut String);
+                replace_placeholder(hwnd, &text);
+            }
+            if let Ok(control) = GetDlgItem(Some(hwnd), ID_LOGIN as i32) {
+                let _ = windows::Win32::UI::Input::KeyboardAndMouse::EnableWindow(control, true);
+            }
+            LRESULT(0)
+        }
+
+        WM_APP_RESULT => {
+            if wparam.0 != 0 {
+                let text = *Box::from_raw(wparam.0 as *mut String);
+                append(hwnd, &text);
+            }
+            if let Ok(control) = GetDlgItem(Some(hwnd), ID_LOGIN as i32) {
+                let _ = windows::Win32::UI::Input::KeyboardAndMouse::EnableWindow(control, true);
             }
             LRESULT(0)
         }

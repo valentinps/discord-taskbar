@@ -523,7 +523,12 @@ startup and shows the result in a window you can copy or save. It changes
 nothing — no OAuth prompt, no config rewrite, no widget — and works while the
 app is already running, because it runs ahead of the single-instance check.
 
-It covers where the exe is running from, whether `config.json` parses, whether
+The first thing it reports is whether the widget is actually running, checked
+against the single-instance mutex. Everything else can pass on a machine where
+it has simply never been started, and from outside that is indistinguishable
+from a broken install.
+
+It then covers where the exe is running from, whether `config.json` parses, whether
 the client id looks like a client id, whether a usable token is cached and
 which scopes it has, whether a `discord-ipc-N` pipe is answering, and — the
 useful one — it performs a real RPC handshake. That validates the client id
@@ -536,6 +541,17 @@ Finally it reports every taskbar found, with its geometry, and whether
 `ReBarWindow32` and `TrayNotifyWnd` are present inside `Shell_TrayWnd` — their
 absence is the signature of a stock Windows 11 taskbar, which is not the
 classic hierarchy this relies on.
+
+A **Try to sign in now** button runs the real authorisation. The handshake
+above proves only the client id; authorisation is a separate exchange that
+uses the client secret and the registered redirect URI, and that is where a
+correctly-created but misconfigured application fails. The button reports
+Discord's own error and translates the common ones — a missing
+`http://localhost` redirect, a stale secret, a dismissed prompt.
+
+Discord is contacted on a worker thread, after the window is already up. A
+tool whose job is to explain a stuck program must never be the thing that
+hangs.
 
 The client secret is never printed, only measured, so the report is safe to
 paste into a chat window.
