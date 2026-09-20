@@ -132,6 +132,12 @@ fn seed(
         .and_then(Value::as_str)
         .map(str::to_string);
 
+    // Cleared before re-reading. A DM or group call has no guild at all, and
+    // GET_GUILD can fail, so leaving the previous values in place would put
+    // the server you just left next to the channel you just joined.
+    status.guild_name = None;
+    status.guild_icon_url = None;
+
     if let Some(guild) = status
         .guild_id
         .as_deref()
@@ -207,13 +213,18 @@ fn apply(
                 .find(|p| p.user_id == updated.user_id)
             {
                 Some(existing) => {
-                    // Voice-state events carry no speaking flag; preserve it.
-                    let speaking = existing.speaking;
-                    if *existing == updated && speaking == existing.speaking {
+                    // Voice-state events carry no speaking flag, so `updated`
+                    // always has it false. Carry the live one over before
+                    // comparing: the old guard tested `speaking` against a
+                    // copy of itself, which is always equal, while the struct
+                    // comparison beside it always differed for whoever was
+                    // talking — so every event about a speaker forced a redraw.
+                    let mut updated = updated;
+                    updated.speaking = existing.speaking;
+                    if *existing == updated {
                         return Ok(false);
                     }
                     *existing = updated;
-                    existing.speaking = speaking;
                 }
                 None => status.participants.push(updated),
             }

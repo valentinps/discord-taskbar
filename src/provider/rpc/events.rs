@@ -36,10 +36,6 @@ impl Subscriptions {
         Self::default()
     }
 
-    pub fn channel_id(&self) -> Option<&str> {
-        self.channel_id.as_deref()
-    }
-
     pub fn subscribe_global(&self, client: &mut RpcClient) -> Result<()> {
         for evt in GLOBAL_EVENTS {
             client.subscribe(evt, Value::Null)?;
@@ -90,23 +86,4 @@ pub fn guild(client: &mut RpcClient, guild_id: &str) -> Result<Value> {
 /// Read the local client's voice settings.
 pub fn voice_settings(client: &mut RpcClient) -> Result<Value> {
     client.call("GET_VOICE_SETTINGS", Value::Null)
-}
-
-/// Set mute and/or deafen on the local client. Needs `rpc.voice.write`.
-///
-/// Discord ties the two together the same way the client UI does: undeafening
-/// while muted leaves you muted, and deafening also mutes.
-pub fn set_voice_settings(
-    client: &mut RpcClient,
-    mute: Option<bool>,
-    deaf: Option<bool>,
-) -> Result<Value> {
-    let mut args = json!({});
-    if let Some(mute) = mute {
-        args["mute"] = Value::Bool(mute);
-    }
-    if let Some(deaf) = deaf {
-        args["deaf"] = Value::Bool(deaf);
-    }
-    client.call("SET_VOICE_SETTINGS", args)
 }

@@ -4,7 +4,9 @@
 //! just forwards input. That keeps recreation after an explorer restart cheap
 //! — we throw the `HWND` away and make another.
 
-use std::sync::atomic::{AtomicBool, AtomicIsize, Ordering};
+use std::collections::HashSet;
+use std::sync::atomic::{AtomicIsize, Ordering};
+use std::sync::Mutex;
 
 use windows::core::w;
 use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, POINT, WPARAM};
@@ -27,8 +29,33 @@ const CLASS_NAME: windows::core::PCWSTR = w!("DiscordTaskbarWidget");
 /// The host window, so input can be forwarded to whoever owns the state.
 static HOST: AtomicIsize = AtomicIsize::new(0);
 
-/// Whether `TrackMouseEvent` is currently armed for the widget.
-static TRACKING: AtomicBool = AtomicBool::new(false);
+/// Which widgets `TrackMouseEvent` is currently armed for.
+///
+/// Per window, not a single flag: `TrackMouseEvent` tracks one `HWND`, and
+/// with one widget per taskbar a shared flag meant the second widget the
+/// pointer entered saw the first one's arming and skipped its own. It then
+/// never received `WM_MOUSELEAVE`, so the volume readout could only be
+/// dismissed by the host's once-a-second safety net.
+static TRACKING: Mutex<Option<HashSet<isize>>> = Mutex::new(None);
+
+/// Arm leave-tracking for `hwnd` unless it already is. Returns whether the
+/// caller now needs to call `TrackMouseEvent`.
+fn arm_tracking(hwnd: HWND) -> bool {
+    match TRACKING.lock() {
+        Ok(mut set) => set.get_or_insert_with(HashSet::new).insert(hwnd.0 as isize),
+        // A poisoned lock is not a reason to stop tracking the mouse; arming
+        // twice is harmless, since Windows ignores a redundant request.
+        Err(_) => true,
+    }
+}
+
+fn disarm_tracking(hwnd: HWND) {
+    if let Ok(mut set) = TRACKING.lock() {
+        if let Some(set) = set.as_mut() {
+            set.remove(&(hwnd.0 as isize));
+        }
+    }
+}
 
 pub fn set_host(hwnd: HWND) {
     HOST.store(hwnd.0 as isize, Ordering::Relaxed);
@@ -76,6 +103,7 @@ unsafe fn class_already_registered() -> bool {
 /// cross-process `HWND` to `CreateWindowExW` with `WS_CHILD` fails here. The
 /// two-step create-then-`SetParent` dance is what TrafficMonitor does, and it
 /// is what actually works.
+///
 /// Always layered: the widget is presented with `UpdateLayeredWindow` so the
 /// taskbar shows through it.
 ///
@@ -157,13 +185,6 @@ pub fn make_topmost(hwnd: HWND) {
     }
 }
 
-/// Ask the widget to repaint from the host's canvas.
-pub fn invalidate(hwnd: HWND) {
-    unsafe {
-        let _ = windows::Win32::Graphics::Gdi::InvalidateRect(Some(hwnd), None, false);
-    }
-}
-
 /// Show without stealing focus from whatever the user is doing.
 pub fn show(hwnd: HWND) {
     unsafe {
@@ -180,23 +201,11 @@ pub fn hide(hwnd: HWND) {
 }
 
 pub fn destroy(hwnd: HWND) {
+    // Drop the tracking entry first: handles are recycled, so leaving a dead
+    // one behind could make a future widget at the same address skip arming.
+    disarm_tracking(hwnd);
     unsafe {
         let _ = DestroyWindow(hwnd);
-    }
-}
-
-/// Move and resize without activating, keeping us above the task button strip.
-pub fn set_geometry(hwnd: HWND, x: i32, y: i32, width: i32, height: i32) {
-    unsafe {
-        let _ = SetWindowPos(
-            hwnd,
-            Some(HWND_TOP),
-            x,
-            y,
-            width,
-            height,
-            SWP_NOACTIVATE,
-        );
     }
 }
 
@@ -268,14 +277,10 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM)
                 LRESULT(0)
             }
 
-            // Mouse tracking has to be re-armed after every WM_MOUSELEAVE, so
-            // this asks for it on each move. Windows ignores a redundant
-            // request for a window it is already tracking.
+            // Tracking ends when WM_MOUSELEAVE fires, so it is armed once per
+            // entry rather than on every move.
             WM_MOUSEMOVE => {
-                // Arm once per entry rather than on every move: tracking ends
-                // when WM_MOUSELEAVE fires, and that is the only time it needs
-                // re-arming.
-                if !TRACKING.swap(true, Ordering::Relaxed) {
+                if arm_tracking(hwnd) {
                     let mut tracking = TRACKMOUSEEVENT {
                         cbSize: std::mem::size_of::<TRACKMOUSEEVENT>() as u32,
                         dwFlags: TME_LEAVE,
@@ -290,7 +295,7 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM)
             }
 
             WM_MOUSELEAVE => {
-                TRACKING.store(false, Ordering::Relaxed);
+                disarm_tracking(hwnd);
                 post_input(hwnd, WM_APP_WIDGET_LEAVE, POINT::default(), 0);
                 LRESULT(0)
             }
@@ -304,8 +309,6 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM)
             // messages, so convert before handing it on.
             WM_MOUSEWHEEL => {
                 let notches = (wparam.0 >> 16) as i16 as i32 / WHEEL_DELTA as i32;
-                // The wheel reports screen coordinates, unlike the button
-                // messages, so convert before handing it on.
                 let mut point = client_point(lparam);
                 let _ = ScreenToClient(hwnd, &mut point);
                 post_input(hwnd, WM_APP_WIDGET_WHEEL, point, notches);

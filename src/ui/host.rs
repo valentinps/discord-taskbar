@@ -69,7 +69,7 @@ thread_local! {
 
 /// One widget, on one taskbar.
 ///
-/// Everything here is per-display; therest of the state is shared. Splitting
+/// Everything here is per-display; the rest of the state is shared. Splitting
 /// it this way is what lets the widget appear on several monitors at once
 /// without duplicating fonts, avatars or the status itself.
 struct Surface {
@@ -79,8 +79,8 @@ struct Surface {
     parented: bool,
     taskbar: TaskbarInfo,
     canvas: Option<Canvas>,
-    /// The taskbar's own colour, sampled from the screen so the widget's
-    /// opaque background is indistinguishable from the bar around it.
+    /// Where each element was last drawn, so a click can be routed back to
+    /// whichever one owns that pixel.
     element_bounds: Vec<RECT>,
 }
 
@@ -112,7 +112,6 @@ struct App {
 
 impl App {
     fn new(host: HWND, theme: Theme, taskbar_created: u32, control: ProviderControl) -> Self {
-        let _ = host;
         App {
             surfaces: Vec::new(),
             fonts: HashMap::new(),
@@ -1070,11 +1069,6 @@ impl App {
         }
     }
 
-    /// Open the settings window, applying anything it saves immediately.
-    ///
-    /// The window is modeless and lives on this thread, so the widget carries
-    /// on working while it is open — and a change can be seen the moment it is
-    /// saved rather than after a restart.
     /// Launch a second copy with `--doctor`.
     ///
     /// A separate process on purpose: the report should describe what a fresh
@@ -1088,6 +1082,11 @@ impl App {
         let _ = std::process::Command::new(exe).arg("--doctor").spawn();
     }
 
+    /// Open the settings window, applying anything it saves immediately.
+    ///
+    /// The window is modeless and lives on this thread, so the widget carries
+    /// on working while it is open — and a change can be seen the moment it is
+    /// saved rather than after a restart.
     fn open_settings(&mut self) {
         let (config, _) = Config::load_or_create();
         settings::open(
@@ -1192,7 +1191,19 @@ impl App {
             }
         }
 
-        let bars = taskbar::find_all();
+        // Only the bars we actually want a widget on. Comparing against every
+        // taskbar on the system meant that showing on one display out of two
+        // left the counts permanently unequal, so `changed` was always true
+        // and the widget re-laid out and re-presented itself once a second
+        // for the life of the call.
+        let bars: Vec<TaskbarInfo> = taskbar::find_all()
+            .into_iter()
+            .filter(|bar| {
+                self.theme
+                    .wants_monitor(bar.monitor_index, &bar.monitor, bar.is_primary)
+            })
+            .collect();
+
         let changed = bars.len() != self.surfaces.len()
             || bars.iter().any(|bar| {
                 self.surfaces
@@ -1309,6 +1320,15 @@ pub fn run(
 
         let mut message = MSG::default();
         while GetMessageW(&mut message, None, 0, 0).as_bool() {
+            // The settings window is a modeless child of this thread, so this
+            // loop is the only place its keyboard can be handled. Without
+            // this its controls have WS_TABSTOP and nothing to honour it:
+            // Tab, Escape and the arrow keys all do nothing. The diagnostics
+            // window and the installer each pump their own loop and already
+            // do this.
+            if settings::handle_dialog_key(&message) {
+                continue;
+            }
             let _ = TranslateMessage(&message);
             DispatchMessageW(&message);
         }

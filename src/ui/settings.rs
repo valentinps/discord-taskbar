@@ -403,6 +403,21 @@ pub fn open(config: &Config, on_save: Box<dyn Fn(Config)>) {
     }
 }
 
+/// Offer a message to the settings window's dialog-key handling.
+///
+/// Returns true when the window consumed it, in which case the caller must
+/// not translate or dispatch it. False whenever the window is closed, so the
+/// host's loop pays a single atomic load for this when it is not open.
+pub fn handle_dialog_key(message: &MSG) -> bool {
+    use std::sync::atomic::Ordering;
+
+    let open = OPEN.load(Ordering::Relaxed);
+    if open == 0 {
+        return false;
+    }
+    unsafe { IsDialogMessageW(HWND(open as *mut std::ffi::c_void), message).as_bool() }
+}
+
 /// Create every control and size the window around them.
 ///
 /// Two columns, filled section by section, because thirty settings in one

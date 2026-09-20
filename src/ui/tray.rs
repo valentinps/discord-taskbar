@@ -7,7 +7,7 @@
 //! is crisp at any DPI and adds nothing to the binary.
 
 use windows::core::PCWSTR;
-use windows::Win32::Foundation::{HWND, LPARAM, POINT, WPARAM};
+use windows::Win32::Foundation::{HWND, LPARAM, POINT};
 use windows::Win32::System::Threading::{AttachThreadInput, GetCurrentThreadId};
 use windows::Win32::Graphics::Gdi::{CreateBitmap, DeleteObject, HBITMAP};
 use windows::Win32::UI::Shell::{
@@ -456,7 +456,3 @@ pub fn open_folder(path: &std::path::Path) {
     }
 }
 
-/// Pack a mouse position for a tray callback message.
-pub fn unpack_mouse(_wparam: WPARAM, lparam: LPARAM) -> u32 {
-    (lparam.0 as u32) & 0xFFFF
-}

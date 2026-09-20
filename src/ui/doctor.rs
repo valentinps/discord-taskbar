@@ -181,7 +181,7 @@ fn section_config(out: &mut String) {
         return;
     }
 
-    let (config, warning) = Config::load_or_create();
+    let (config, warning) = Config::load();
     match warning {
         Some(warning) => {
             let _ = writeln!(out, "{BAD}config.json    {warning}");
@@ -301,7 +301,7 @@ fn section_discord(out: &mut String) {
             .join(", discord-ipc-")
     );
 
-    let (config, _) = Config::load_or_create();
+    let (config, _) = Config::load();
     let id = config.discord.client_id.trim();
     if id.is_empty() {
         let _ = writeln!(
@@ -597,7 +597,7 @@ fn probe_discord(hwnd: HWND) {
 /// redirect URI, and it is where a correctly-created-but-misconfigured
 /// application actually fails — so the only way to diagnose it is to try it.
 fn try_sign_in(hwnd: HWND) {
-    let (config, _) = Config::load_or_create();
+    let (config, _) = Config::load();
     let credentials = config.discord.clone();
 
     if !credentials.is_complete() {

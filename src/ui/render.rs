@@ -43,8 +43,19 @@ impl Color {
 
     /// Parse `#RRGGBB` or `#RRGGBBAA`. Returns `None` on anything else so the
     /// caller can fall back to a default rather than panic on a typo.
+    ///
+    /// The ASCII check is what makes that promise true. `len()` counts bytes,
+    /// so a typo made of two three-byte characters is six bytes long and
+    /// reaches the slicing below, where a two-byte cut lands inside a
+    /// character and panics. Colours are parsed out of config.json during
+    /// startup, and the release build aborts on panic with no console, so such
+    /// a typo would make the app vanish without a word — exactly the failure
+    /// `Config::load_or_create` goes out of its way to avoid.
     pub fn from_hex(text: &str) -> Option<Self> {
         let hex = text.trim().trim_start_matches('#');
+        if !hex.is_ascii() {
+            return None;
+        }
         let byte = |i: usize| u8::from_str_radix(&hex[i..i + 2], 16).ok();
         match hex.len() {
             6 => Some(Color::rgb(byte(0)?, byte(2)?, byte(4)?)),
@@ -725,4 +736,48 @@ fn scale_premultiplied(pixel: u32, factor: f32) -> u32 {
     }
     let scale = |shift: u32| (((pixel >> shift) & 0xFF) as f32 * factor).round() as u32 & 0xFF;
     (scale(24) << 24) | (scale(16) << 16) | (scale(8) << 8) | scale(0)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parses_both_hex_forms() {
+        assert_eq!(Color::from_hex("#2B2D31"), Some(Color::rgb(0x2B, 0x2D, 0x31)));
+        assert_eq!(
+            Color::from_hex("#2B2D31D8"),
+            Some(Color::rgba(0x2B, 0x2D, 0x31, 0xD8))
+        );
+        // The hash is optional and surrounding space is ignored, because both
+        // are what people actually type into a config file.
+        assert_eq!(Color::from_hex("  23A559 "), Some(Color::rgb(0x23, 0xA5, 0x59)));
+    }
+
+    #[test]
+    fn a_typo_is_none_rather_than_a_panic() {
+        // Each of these is six or eight *bytes* but not six or eight ASCII
+        // characters, so the old byte-slicing cut through the middle of a
+        // character and panicked. A colour is parsed during startup and the
+        // release build aborts on panic with no console, so that took the
+        // whole app down without a word.
+        for bad in ["\u{20AC}\u{20AC}", "#\u{20AC}\u{20AC}", "\u{20AC}\u{20AC}ab", "\u{FF10}\u{FF10}"] {
+            assert_eq!(Color::from_hex(bad), None, "{bad:?} should not parse");
+        }
+    }
+
+    #[test]
+    fn rejects_the_wrong_length_and_non_hex_digits() {
+        for bad in ["", "#", "#FFF", "#FFFFF", "#FFFFFFF", "#GGGGGG", "#12345Z"] {
+            assert_eq!(Color::from_hex(bad), None, "{bad:?} should not parse");
+        }
+    }
+
+    #[test]
+    fn premultiplication_is_reversible_at_the_ends() {
+        // Fully opaque keeps the channels untouched, fully transparent has
+        // nothing left to keep. Everything the canvas blends assumes both.
+        assert_eq!(Color::rgb(0x12, 0x34, 0x56).premultiplied(), 0xFF12_3456);
+        assert_eq!(Color::rgba(0x12, 0x34, 0x56, 0).premultiplied(), 0);
+    }
 }

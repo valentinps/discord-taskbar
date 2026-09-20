@@ -172,6 +172,18 @@ pub struct Theme {
 }
 
 impl Theme {
+    /// What Discord's own slider shows for a stored amplitude.
+    ///
+    /// RPC deals in amplitude; every number the user sees should be this.
+    pub fn shown_volume(&self, amplitude: f32) -> f32 {
+        crate::volume::amplitude_to_perceptual(amplitude, self.volume_curve, self.volume_boost_db)
+    }
+
+    /// The amplitude to store for a number the user chose.
+    pub fn stored_volume(&self, perceptual: f32) -> f32 {
+        crate::volume::perceptual_to_amplitude(perceptual, self.volume_curve, self.volume_boost_db)
+    }
+
     /// The top of the volume scale to draw and map against.
     ///
     /// Normally just the configured maximum. Set that to match whatever
@@ -185,18 +197,6 @@ impl Theme {
     /// equal to the current volume would leave the bar full at every value
     /// above the configured maximum, which is no more informative than
     /// clipping it.
-    /// What Discord's own slider shows for a stored amplitude.
-    ///
-    /// RPC deals in amplitude; every number the user sees should be this.
-    pub fn shown_volume(&self, amplitude: f32) -> f32 {
-        crate::volume::amplitude_to_perceptual(amplitude, self.volume_curve, self.volume_boost_db)
-    }
-
-    /// The amplitude to store for a number the user chose.
-    pub fn stored_volume(&self, perceptual: f32) -> f32 {
-        crate::volume::perceptual_to_amplitude(perceptual, self.volume_curve, self.volume_boost_db)
-    }
-
     pub fn volume_ceiling(&self, current: f32) -> f32 {
         if current <= self.max_volume {
             return self.max_volume.max(1.0);

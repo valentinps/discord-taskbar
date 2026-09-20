@@ -123,6 +123,38 @@ impl Config {
         }
     }
 
+    /// Read the config without writing anything back.
+    ///
+    /// `load_or_create` rewrites the file so every field is visible, which is
+    /// right at startup and wrong for a diagnostic: `--doctor` says in as many
+    /// words that it changes nothing, and it may well be run while the app is
+    /// up. Errors come back as a warning string, the same shape as
+    /// `load_or_create`, so callers report them identically.
+    pub fn load() -> (Self, Option<String>) {
+        let path = config_path();
+        if !path.exists() {
+            return (Config::default(), None);
+        }
+
+        let text = match std::fs::read(&path) {
+            Ok(bytes) => decode(&bytes),
+            Err(e) => {
+                return (
+                    Config::default(),
+                    Some(format!("Could not read config.json: {e}")),
+                )
+            }
+        };
+
+        match serde_json::from_str::<Config>(&text) {
+            Ok(config) => (config, None),
+            Err(e) => (
+                Config::default(),
+                Some(format!("config.json is invalid ({e}); using defaults")),
+            ),
+        }
+    }
+
     pub fn save(&self) -> Result<(), ConfigError> {
         let dir = config_dir();
         std::fs::create_dir_all(&dir).map_err(ConfigError::Io)?;

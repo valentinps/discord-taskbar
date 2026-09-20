@@ -376,7 +376,6 @@ fn render(
     Some(Layout { rows, volume_bar })
 }
 
-/// Map a click inside a volume row to a volume.
 /// The volume scale in force for whoever this menu is about.
 fn ceiling(style: &Style) -> f32 {
     // Everything in this module is in the numbers the user sees, so the
@@ -420,11 +419,6 @@ fn register_class() -> bool {
     }
 }
 
-/// Show the menu near `anchor` and block until something is chosen or it is
-/// dismissed.
-///
-/// `above` places the menu's bottom edge at the anchor, which is what you want
-/// over a bottom-docked taskbar.
 /// What the menu ended with.
 #[derive(Debug, Default, Clone, Copy)]
 pub struct Outcome {
@@ -440,6 +434,11 @@ pub struct Outcome {
     pub dismissed_at: Option<POINT>,
 }
 
+/// Show the menu near `anchor` and block until something is chosen or it is
+/// dismissed.
+///
+/// `above` places the menu's bottom edge at the anchor, which is what you want
+/// over a bottom-docked taskbar.
 pub fn show(
     items: &[Item],
     style: &mut Style,
