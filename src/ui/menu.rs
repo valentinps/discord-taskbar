@@ -348,7 +348,8 @@ fn render(
                     );
 
                     let span = bar_right - bar_left;
-                    let filled = (span as f32 * (value / 200.0)).round() as i32;
+                    let ceiling = style.theme.volume_ceiling(*value);
+                    let filled = (span as f32 * (value / ceiling)).round() as i32;
                     if filled > 0 {
                         canvas.fill_round_rect(
                             RECT {
@@ -376,16 +377,22 @@ fn render(
 }
 
 /// Map a click inside a volume row to a volume.
+/// The volume scale in force for whoever this menu is about.
+fn ceiling(style: &Style) -> f32 {
+    let current = style.participant.map(|p| p.volume).unwrap_or(0.0);
+    style.theme.volume_ceiling(current)
+}
+
 /// Map a click to a volume, using the bar's real extent.
 ///
 /// The first version estimated where the bar was from the metrics, which did
 /// not match where it had actually been drawn — the label and percentage are
 /// measured text, so their widths are not knowable in advance. Clicking
 /// therefore set a volume some distance from the one under the pointer.
-fn volume_at(x: i32, bar: (i32, i32)) -> f32 {
+fn volume_at(x: i32, bar: (i32, i32), ceiling: f32) -> f32 {
     let (left, right) = bar;
     let span = (right - left).max(1);
-    (((x - left) as f32 / span as f32) * 200.0).clamp(0.0, 200.0)
+    (((x - left) as f32 / span as f32) * ceiling).clamp(0.0, ceiling)
 }
 
 fn register_class() -> bool {
@@ -619,10 +626,10 @@ fn run_loop(
                     let Some(local) = local else { continue };
 
                     // A drag tracks the pointer even outside the row, which is
-                    // what makes reaching 0% and 200% possible.
+                    // what makes reaching either end of the scale possible.
                     if volume.dragging.is_some() {
                         if let Some(bar) = layout.volume_bar {
-                            volume.set(style, volume_at(local.x, bar), true);
+                            volume.set(style, volume_at(local.x, bar, ceiling(style)), true);
                             repaint(canvas, style, hovered, &volume, &mut layout);
                         }
                         continue;
@@ -657,7 +664,7 @@ fn run_loop(
                     // so the press itself is the first adjustment.
                     if message.message == WM_LBUTTONDOWN && row_at(local) == volume_row {
                         if let Some(bar) = layout.volume_bar {
-                            volume.set(style, volume_at(local.x, bar), true);
+                            volume.set(style, volume_at(local.x, bar, ceiling(style)), true);
                             repaint(canvas, style, hovered, &volume, &mut layout);
                         }
                     }

@@ -231,8 +231,9 @@ pub fn draw_volume(canvas: &mut Canvas, view: &mut VolumeView) -> Option<(i32, i
         view.theme.text_dim,
     );
 
-    // Track, then fill. 100% is the midpoint, so boosting past normal is
-    // visibly past halfway rather than hidden at the end of the bar.
+    // Track, then fill. At the default 200% ceiling that puts normal volume
+    // at the midpoint, so boosting past it is visibly past halfway rather
+    // than hidden at the end of the bar.
     let bar_y = centre_y + bar_lift;
     canvas.fill_round_rect(
         windows::Win32::Foundation::RECT {
@@ -245,7 +246,8 @@ pub fn draw_volume(canvas: &mut Canvas, view: &mut VolumeView) -> Option<(i32, i
         view.theme.divider,
     );
 
-    let filled = (text_width as f32 * (view.volume / 200.0)).round() as i32;
+    let ceiling = view.theme.volume_ceiling(view.volume);
+    let filled = (text_width as f32 * (view.volume / ceiling)).round() as i32;
     if filled > 0 {
         canvas.fill_round_rect(
             windows::Win32::Foundation::RECT {

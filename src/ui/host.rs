@@ -532,7 +532,8 @@ impl App {
         }
 
         let step = self.theme.scroll_volume_step as f32;
-        let volume = (participant.volume + notches as f32 * step).clamp(0.0, 200.0);
+        let ceiling = self.theme.volume_ceiling(participant.volume);
+        let volume = (participant.volume + notches as f32 * step).clamp(0.0, ceiling);
         let name = participant.display_name.clone();
 
         if !self.control.set_user_voice(&user_id, Some(volume), None) {

@@ -222,6 +222,13 @@ static FIELDS: &[Field] = &[
     },
     Field {
         section: "Participants",
+        label: "Maximum volume %",
+        kind: Kind::Number { min: 100, max: 1000 },
+        get: |c| c.appearance.max_volume.to_string(),
+        set: |c, v| c.appearance.max_volume = parse_int(v, c.appearance.max_volume),
+    },
+    Field {
+        section: "Participants",
         label: "Volume per wheel notch",
         kind: Kind::Number { min: 1, max: 50 },
         get: |c| c.appearance.scroll_volume_step.to_string(),

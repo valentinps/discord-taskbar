@@ -62,6 +62,12 @@ pub struct Appearance {
     pub middle_click: String,
     /// Volume change per notch of the scroll wheel, over a participant.
     pub scroll_volume_step: i32,
+    /// Top of the per-user volume scale, as a percentage.
+    ///
+    /// Discord's own limit is 200, and client plugins exist that raise it.
+    /// Setting this to match such a plugin is what keeps the bar and the
+    /// number agreeing with Discord when one is in use.
+    pub max_volume: i32,
     /// Which displays to show the widget on.
     ///
     /// `["primary"]`, `["all"]`, or a list of monitor indices (`["0", "1"]`)
@@ -105,6 +111,7 @@ impl Default for Appearance {
             show_leave_button: true,
             middle_click: "local_mute".to_string(),
             scroll_volume_step: 10,
+            max_volume: 200,
             monitors: vec!["primary".to_string()],
             x_offset: 0,
             y_offset: 0,
@@ -143,9 +150,80 @@ pub struct Theme {
     pub show_leave_button: bool,
     pub middle_click: MiddleClick,
     pub scroll_volume_step: i32,
+    pub max_volume: f32,
     pub monitors: Vec<String>,
     pub x_offset: i32,
     pub y_offset: i32,
+}
+
+impl Theme {
+    /// The top of the volume scale to draw and map against.
+    ///
+    /// Normally just the configured maximum. Set that to match whatever
+    /// Discord's own slider allows — 200 by default, more if a client plugin
+    /// has raised it — and the bar and the number agree with Discord.
+    ///
+    /// The rest of this exists for when it has not been set. A volume above
+    /// the ceiling would otherwise peg the bar at full while the number kept
+    /// climbing, so the scale grows to the next whole hundred instead.
+    /// Rounding up rather than taking the value itself matters: a ceiling
+    /// equal to the current volume would leave the bar full at every value
+    /// above the configured maximum, which is no more informative than
+    /// clipping it.
+    pub fn volume_ceiling(&self, current: f32) -> f32 {
+        if current <= self.max_volume {
+            return self.max_volume.max(1.0);
+        }
+        (current / 100.0).ceil() * 100.0
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn theme_with_max(max: i32) -> Theme {
+        Theme::from(&Appearance {
+            max_volume: max,
+            ..Appearance::default()
+        })
+    }
+
+    #[test]
+    fn ceiling_is_the_configured_maximum_in_the_ordinary_case() {
+        let theme = theme_with_max(200);
+        assert_eq!(theme.volume_ceiling(0.0), 200.0);
+        assert_eq!(theme.volume_ceiling(100.0), 200.0);
+        assert_eq!(theme.volume_ceiling(200.0), 200.0);
+    }
+
+    #[test]
+    fn a_configured_maximum_is_used_as_given() {
+        // What someone running a 400% plugin would set.
+        let theme = theme_with_max(400);
+        assert_eq!(theme.volume_ceiling(350.0), 400.0);
+        assert_eq!(theme.volume_ceiling(400.0), 400.0);
+    }
+
+    #[test]
+    fn an_unconfigured_maximum_grows_to_the_next_hundred() {
+        // The bar must not sit full across a whole range of values.
+        let theme = theme_with_max(200);
+        assert_eq!(theme.volume_ceiling(250.0), 300.0);
+        assert_eq!(theme.volume_ceiling(300.0), 300.0);
+        assert_eq!(theme.volume_ceiling(301.0), 400.0);
+
+        // Distinct volumes above the limit must fill the bar differently.
+        let a = 250.0 / theme.volume_ceiling(250.0);
+        let b = 300.0 / theme.volume_ceiling(300.0);
+        assert!(a < b, "{a} should fill less of the bar than {b}");
+    }
+
+    #[test]
+    fn the_ceiling_is_never_zero() {
+        // Dividing the bar width by this must always be safe.
+        assert!(theme_with_max(100).volume_ceiling(0.0) > 0.0);
+    }
 }
 
 /// What the middle mouse button does over a participant.
@@ -211,6 +289,7 @@ impl From<&Appearance> for Theme {
             show_leave_button: a.show_leave_button,
             middle_click: MiddleClick::parse(&a.middle_click),
             scroll_volume_step: a.scroll_volume_step.clamp(1, 50),
+            max_volume: a.max_volume.clamp(100, 1000) as f32,
             monitors: if a.monitors.is_empty() {
                 vec!["primary".to_string()]
             } else {

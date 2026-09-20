@@ -177,10 +177,16 @@ impl ProviderControl {
     }
 
     /// Local volume and/or local mute for one other participant.
+    ///
+    /// The bound here is a sanity check, not the scale: Discord's documented
+    /// maximum is 200, but client plugins raise it, and clamping to 200 here
+    /// would quietly drag such a user's volume down every time anything else
+    /// about them was set. The meaningful ceiling belongs to the caller, which
+    /// knows what scale is in use.
     pub fn set_user_voice(&self, user_id: &str, volume: Option<f32>, mute: Option<bool>) -> bool {
         let mut args = json!({ "user_id": user_id });
         if let Some(volume) = volume {
-            args["volume"] = json!(volume.clamp(0.0, 200.0).round() as i64);
+            args["volume"] = json!(volume.clamp(0.0, 1000.0).round() as i64);
         }
         if let Some(mute) = mute {
             args["mute"] = Value::Bool(mute);

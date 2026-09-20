@@ -253,6 +253,7 @@ Everything below lives under `"appearance"` in `config.json`. Metrics are in
 | `show_leave_button` | `true` | Hang-up button to leave voice |
 | `middle_click` | `local_mute` | Middle-click on a participant: `local_mute`, `volume_reset` or `none` |
 | `scroll_volume_step` | `10` | Volume change per wheel notch |
+| `max_volume` | `200` | Top of the per-user volume scale, as a percentage |
 | `monitors` | `["primary"]` | Which displays to show on: `["primary"]`, `["all"]`, or indices like `["0","1"]`. The tray menu's **Show on** submenu edits this |
 | `x_offset` / `y_offset` | `0` | Nudge the widget |
 
@@ -546,6 +547,29 @@ the real one.
 This exists because every interface change used to need a live call to look at,
 which made some paths awkward to check and others only reasonable about. It is
 the fastest way to work on anything visual.
+
+### Per-user volume, and plugins that raise the limit
+
+Discord's per-user volume is a percentage from 0 to 200, and it comes over RPC
+as a float — `112.6076431274414` is a real reading from a real call. The widget
+shows it rounded and draws the bar against `max_volume`.
+
+Client plugins exist that raise Discord's own 200% limit. With one in use the
+two disagree in both directions: Discord reports a volume the widget's scale
+cannot represent, so the bar pegs at full while the number keeps climbing, and
+anything the widget writes back gets clamped down to 200 — quietly dragging the
+volume down every time you touch it.
+
+Set `max_volume` to whatever the plugin allows (400, usually) and both agree
+again. `examples/volume_probe.rs` prints what Discord actually reports for
+everyone in the call, and with `--probe-max <user id>` walks one user's volume
+upward to find the ceiling Discord will really keep, restoring the original
+value afterwards.
+
+If it is left unset, a volume above the ceiling grows the scale to the next
+whole hundred rather than clipping. That is a guard, not a substitute for
+setting it: it keeps the bar and the number from contradicting each other, but
+the scale then shifts as the volume crosses each hundred.
 
 ## When nothing shows up
 
