@@ -390,34 +390,6 @@ fn section_taskbar(out: &mut String) {
             present(bar.rebar_rect),
             present(bar.notify_rect),
         );
-
-        // The widget paints this colour behind itself, because a layered child
-        // window gets no compositing from the shell. When it comes out wrong
-        // the result is a box that does not match the bar — the most visible
-        // way this can look broken while working perfectly otherwise.
-        match taskbar::sample_background(bar, (0, 0, 0, 0)) {
-            Some(backdrop) => {
-                let colour = backdrop.color();
-                let _ = writeln!(
-                    out,
-                    "{INFO}     backdrop   #{:02X}{:02X}{:02X}  ({})",
-                    colour & 0xFF,
-                    (colour >> 8) & 0xFF,
-                    (colour >> 16) & 0xFF,
-                    backdrop.how(),
-                );
-            }
-            None => {
-                let _ = writeln!(
-                    out,
-                    "{WARN}     backdrop   could not read the bar; set Background in"
-                );
-                let _ = writeln!(
-                    out,
-                    "{INFO}                Settings to a fixed colour instead"
-                );
-            }
-        }
     }
 
     if bars.iter().all(|b| b.rebar_rect.is_none() && b.notify_rect.is_none()) {

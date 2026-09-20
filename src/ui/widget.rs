@@ -76,22 +76,20 @@ unsafe fn class_already_registered() -> bool {
 /// cross-process `HWND` to `CreateWindowExW` with `WS_CHILD` fails here. The
 /// two-step create-then-`SetParent` dance is what TrafficMonitor does, and it
 /// is what actually works.
-/// `layered` asks for a window that can hold per-pixel alpha.
+/// Always layered: the widget is presented with `UpdateLayeredWindow` so the
+/// taskbar shows through it.
 ///
-/// That only works on a top-level window: `UpdateLayeredWindow` silently does
-/// nothing on a child, which is why the ordinary widget parents itself to the
-/// taskbar and paints an opaque copy of the taskbar's colour instead.
-pub fn create(layered: bool) -> Option<HWND> {
+/// That works on a child window since Windows 8, which is what lets the widget
+/// be genuinely transparent while still living inside `Shell_TrayWnd` and
+/// being clipped, hidden and z-ordered by the shell along with it. See
+/// `examples/layered_child_probe.rs`, which checks it on the machine it runs
+/// on.
+pub fn create() -> Option<HWND> {
     unsafe {
         let instance = GetModuleHandleW(None).ok()?;
 
-        let mut ex_style = WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE;
-        if layered {
-            ex_style |= WS_EX_LAYERED;
-        }
-
         let hwnd = CreateWindowExW(
-            ex_style,
+            WS_EX_LAYERED | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE,
             CLASS_NAME,
             w!("Discord Status"),
             WS_POPUP,

@@ -62,13 +62,6 @@ struct VolumeOverlay {
     hold_until: std::time::Instant,
 }
 
-/// How often to re-check the taskbar's colour while the widget is on screen.
-///
-/// The sample is cached because taking it is relatively expensive, but a
-/// cached *wrong* answer would otherwise persist forever — which is exactly
-/// what happened when a transient red window over the bar tinted the whole
-/// widget.
-const BACKDROP_RECHECK: std::time::Duration = std::time::Duration::from_secs(10);
 
 thread_local! {
     static APP: RefCell<Option<App>> = const { RefCell::new(None) };
@@ -88,13 +81,6 @@ struct Surface {
     canvas: Option<Canvas>,
     /// The taskbar's own colour, sampled from the screen so the widget's
     /// opaque background is indistinguishable from the bar around it.
-    backdrop: Color,
-    /// Sampling costs ~16 ms because reading the screen DC forces the
-    /// compositor to read back from the GPU. Far too expensive to do on every
-    /// repaint, so it is cached and only redone when the taskbar changes.
-    backdrop_stale: bool,
-    backdrop_checked: Option<std::time::Instant>,
-    /// Where each element landed in the last layout, for routing clicks.
     element_bounds: Vec<RECT>,
 }
 
@@ -112,8 +98,6 @@ struct App {
     elements: Vec<Box<dyn Element>>,
     /// Shown instead of the status when something needs the user's attention.
     notice: Option<String>,
-    /// A floating widget is stood down while something is full-screen.
-    hidden_for_fullscreen: bool,
     /// When set, `notice` clears itself at this time.
     notice_expires: Option<std::time::Instant>,
     /// Shown while the wheel is adjusting somebody's volume. Lives in its own
@@ -147,7 +131,6 @@ impl App {
                 Box::new(LeaveButton),
             ],
             notice: None,
-            hidden_for_fullscreen: false,
             notice_expires: None,
             volume_overlay: None,
             popup: None,
@@ -227,32 +210,23 @@ impl App {
                     if surface.taskbar.dpi != bar.dpi {
                         surface.canvas = None;
                     }
-                    if !rects_equal(&surface.taskbar.rect, &bar.rect) {
-                        surface.backdrop_stale = true;
-                    }
                     // A taskbar recreated by explorer has a new window, so the
                     // widget has to be re-parented to it.
                     if surface.taskbar.tray != bar.tray {
-                        surface.parented =
-                            !self.theme.transparent && widget::attach(surface.hwnd, bar.tray);
+                        surface.parented = widget::attach(surface.hwnd, bar.tray);
                         if !surface.parented {
                             widget::make_topmost(surface.hwnd);
                         }
-                        surface.backdrop_stale = true;
                     }
                     surface.taskbar = bar;
                 }
                 None => {
-                    // See-through means staying out of the taskbar: a layered
-                    // child window is not composited by the shell, so the only
-                    // way to show what is behind is to float above it.
-                    let floating = self.theme.transparent;
-                    let Some(hwnd) = widget::create(floating) else {
+                    let Some(hwnd) = widget::create() else {
                         continue;
                     };
                     // Same escape hatch TrafficMonitor keeps: if the shell will
                     // not adopt us, float on top instead of giving up.
-                    let parented = !floating && widget::attach(hwnd, bar.tray);
+                    let parented = widget::attach(hwnd, bar.tray);
                     if !parented {
                         widget::make_topmost(hwnd);
                     }
@@ -261,9 +235,6 @@ impl App {
                         parented,
                         taskbar: bar,
                         canvas: None,
-                        backdrop: Color::rgb(0, 0, 0),
-                        backdrop_stale: true,
-                        backdrop_checked: None,
                         element_bounds: Vec::new(),
                     });
                 }
@@ -299,13 +270,6 @@ impl App {
             return;
         }
 
-        // Stood down so as not to cover a full-screen window.
-        if self.hidden_for_fullscreen {
-            for surface in &self.surfaces {
-                widget::hide(surface.hwnd);
-            }
-            return;
-        }
 
         // When there is nothing to say, take up no space at all.
         if self.is_idle() {
@@ -361,30 +325,7 @@ impl App {
             margin,
         );
 
-        // Sample the taskbar's own colour beside us. A layered child window is
-        // not composited by the shell, so the widget paints this backdrop
-        // itself and blends in without needing transparency.
-        //
-        // Only when something could have changed it: this is by far the most
-        // expensive thing a refresh does.
-        if self.surfaces[index].backdrop_stale {
-            // An explicit colour wins: sampling cannot succeed on a
-            // translucent bar, and being able to say "it is this colour" is
-            // the difference between a widget that blends in and a black box.
-            if let Some(fixed) = self.theme.taskbar_background {
-                self.surfaces[index].backdrop = fixed;
-            } else if let Some(sampled) =
-                taskbar::sample_background(&info, (screen_x, screen_y, width, height))
-            {
-                self.surfaces[index].backdrop = Color::from_colorref(sampled.color());
-            }
-            self.surfaces[index].backdrop_stale = false;
-            self.surfaces[index].backdrop_checked = Some(std::time::Instant::now());
-        }
-
         let radius = self.scale_at(dpi, self.theme.corner_radius);
-        let transparent = self.theme.transparent;
-        let backdrop = self.surfaces[index].backdrop;
         let background = self.theme.background;
 
         if let Some(canvas) = self.surfaces[index].canvas.as_mut() {
@@ -398,12 +339,21 @@ impl App {
                 bottom: height,
             };
             canvas.clear();
-            // Painting the sampled taskbar colour is what stands in for
-            // transparency when we live inside the bar. Floating above it, the
-            // real thing shows through and this would cover it up.
-            if !transparent {
-                canvas.fill_rect(full, backdrop);
-            }
+
+            // Outside the rounded rect stays transparent and the taskbar shows
+            // through for real.
+            //
+            // Except that it cannot be *quite* transparent. A layered window
+            // passes mouse messages straight through any pixel with zero
+            // alpha, so a fully transparent background would hand the gaps
+            // between avatars back to the taskbar, and with them the moves
+            // that drive hover, the wheel and WM_MOUSELEAVE. An alpha of 1 is
+            // invisible and keeps the whole rectangle hit-testable.
+            //
+            // TrafficMonitor carries the same workaround for a different
+            // reason: it nudges a pure black colour key to 1, because Windows
+            // 11 mishandles the fully transparent case there too.
+            canvas.fill_rect(full, Color::rgba(0, 0, 0, 1));
             canvas.fill_round_rect(full, radius, background);
         }
 
@@ -417,26 +367,12 @@ impl App {
             (screen_x, screen_y)
         };
 
-        if transparent {
-            // One call moves, resizes and presents, so there is no WM_PAINT
-            // and no moment where the window is the right size but still
-            // holds the previous frame.
-            widget::show(hwnd);
-            let presented = self.surfaces[index]
-                .canvas
-                .as_ref()
-                .map(|canvas| canvas.present_layered_at(hwnd, x, y))
-                .unwrap_or(false);
-            if !presented {
-                // Falling back keeps a visible widget rather than an empty
-                // hole, and the notice explains why it does not match.
-                widget::set_geometry(hwnd, x, y, width, height);
-                widget::invalidate(hwnd);
-            }
-        } else {
-            widget::set_geometry(hwnd, x, y, width, height);
-            widget::show(hwnd);
-            widget::invalidate(hwnd);
+        // One call moves, resizes and presents, so there is no WM_PAINT and no
+        // moment where the window is the right size but still holds the
+        // previous frame.
+        widget::show(hwnd);
+        if let Some(canvas) = self.surfaces[index].canvas.as_ref() {
+            canvas.present_layered_at(hwnd, x, y);
         }
     }
 
@@ -1157,16 +1093,7 @@ impl App {
             self.notice_expires = Some(std::time::Instant::now() + NOTICE_LINGER);
         }
 
-        let was_transparent = self.theme.transparent;
         self.theme = Theme::from(&config.appearance);
-
-        // See-through is not a property the window can be talked into after
-        // the fact: it decides the extended style and whether the taskbar is
-        // our parent. Both are fixed at creation, so switching means new
-        // windows.
-        if was_transparent != self.theme.transparent {
-            self.drop_surfaces();
-        }
 
         // Metrics and colours may all have moved.
         self.rebuild_fonts();
@@ -1174,7 +1101,6 @@ impl App {
         self.images.clear();
         for surface in &mut self.surfaces {
             surface.canvas = None;
-            surface.backdrop_stale = true;
         }
 
         self.refresh();
@@ -1239,36 +1165,6 @@ impl App {
 
     /// Cheap periodic check: have the taskbars moved, resized, or died?
     fn on_timer(&mut self) {
-        // Re-check taskbar colours now and then, so a sample taken while
-        // something was covering a bar cannot stick permanently.
-        if !self.is_idle() {
-            for surface in &mut self.surfaces {
-                let due = surface
-                    .backdrop_checked
-                    .is_none_or(|at| at.elapsed() >= BACKDROP_RECHECK);
-                if due {
-                    surface.backdrop_stale = true;
-                }
-            }
-        }
-
-        // A window inside the taskbar is hidden by the shell along with it.
-        // One floating above is not, so it would sit on top of a full-screen
-        // game like a sticker. Check every tick and get out of the way.
-        if self.theme.transparent {
-            let covered = fullscreen_window_is_foreground();
-            if covered != self.hidden_for_fullscreen {
-                self.hidden_for_fullscreen = covered;
-                if covered {
-                    for surface in &self.surfaces {
-                        widget::hide(surface.hwnd);
-                    }
-                } else {
-                    self.refresh();
-                }
-            }
-        }
-
         // Safety net for the readout. Hover and leave events normally dismiss
         // it, but a missed WM_MOUSELEAVE would otherwise strand it on screen,
         // so the real pointer position is checked once a second too.
@@ -1303,57 +1199,9 @@ impl App {
                 .iter()
                 .all(|s| unsafe { IsWindow(Some(s.hwnd)).as_bool() });
 
-        let wants_redraw = self.surfaces.iter().any(|s| s.backdrop_stale);
-
-        if changed || !all_alive || wants_redraw {
+        if changed || !all_alive {
             self.refresh();
         }
-    }
-}
-
-/// Whether the foreground window covers a whole monitor.
-///
-/// Games and video players do, and the taskbar goes behind them. A widget
-/// living inside the taskbar disappears along with it; one floating above does
-/// not, so it has to be told.
-///
-/// The desktop and the shell itself are excluded: both are always the size of
-/// a monitor and neither is what this is about.
-fn fullscreen_window_is_foreground() -> bool {
-    use windows::Win32::Graphics::Gdi::{
-        GetMonitorInfoW, MonitorFromWindow, MONITORINFO, MONITOR_DEFAULTTONEAREST,
-    };
-    use windows::Win32::UI::WindowsAndMessaging::{
-        GetDesktopWindow, GetForegroundWindow, GetShellWindow, GetWindowRect,
-    };
-
-    unsafe {
-        let foreground = GetForegroundWindow();
-        if foreground.is_invalid()
-            || foreground == GetShellWindow()
-            || foreground == GetDesktopWindow()
-        {
-            return false;
-        }
-
-        let mut rect = RECT::default();
-        if GetWindowRect(foreground, &mut rect).is_err() {
-            return false;
-        }
-
-        let monitor = MonitorFromWindow(foreground, MONITOR_DEFAULTTONEAREST);
-        let mut info = MONITORINFO {
-            cbSize: std::mem::size_of::<MONITORINFO>() as u32,
-            ..Default::default()
-        };
-        if !GetMonitorInfoW(monitor, &mut info).as_bool() {
-            return false;
-        }
-
-        rect.left <= info.rcMonitor.left
-            && rect.top <= info.rcMonitor.top
-            && rect.right >= info.rcMonitor.right
-            && rect.bottom >= info.rcMonitor.bottom
     }
 }
 
@@ -1547,7 +1395,6 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM)
                 with_app(|app| {
                     for surface in &mut app.surfaces {
                         surface.canvas = None;
-                        surface.backdrop_stale = true;
                     }
                     app.rebuild_fonts();
                     app.refresh();

@@ -262,41 +262,43 @@ people who aren't talking. With it off the order is fixed and alphabetical.
 
 ### The background
 
-There are two ways the widget can sit on the taskbar, and they differ in
-exactly one thing: whether it is *inside* the bar or *above* it.
+The widget is a `WS_CHILD` of `Shell_TrayWnd` **and** `WS_EX_LAYERED`, presented
+with `UpdateLayeredWindow`. It is genuinely transparent: the taskbar shows
+through it, translucency, gradient, wallpaper and all, because DWM composites
+it rather than the widget painting a copy of what it thinks is underneath.
 
-**Inside (default).** The widget is a `WS_CHILD` of `Shell_TrayWnd`. The shell
-does not composite layered child windows — `UpdateLayeredWindow` silently does
-nothing on one — so it cannot show anything through itself. Instead it samples
-the taskbar's colour beside itself and paints that, which looks the same on a
-plain bar. In return it is clipped, hidden and z-ordered by the shell along
-with the taskbar, for free.
+Per-pixel alpha on a *child* window has worked since Windows 8. This project
+assumed otherwise for most of its life and went a long way around: sampling the
+taskbar's colour beside the widget and painting that. It worked on a plain bar,
+approximated a translucent one badly, and was the most expensive thing a
+refresh did. `examples/layered_child_probe.rs` checks the assumption directly,
+on the machine it runs on, and prints what it finds.
 
-Sampling takes the most common colour across a row of the bar, and demands a
-clear majority before believing it, so a notification or an overlapping window
-cannot become the widget's background. A translucent, blurred or gradient bar
-has no majority colour — every pixel differs slightly — so it falls back to the
-average of what it sampled. That is an approximation of something that is not
-one colour, and it is the best this mode can do. Before the fallback existed
-this case gave up and left the backdrop black.
+Staying a child is the whole point. The shell clips, hides and z-orders the
+widget along with the taskbar, so it disappears behind full-screen games
+without being told to and never floats over anything. A top-level layered
+window gets the same transparency but has to be given a topmost style and
+taught to dodge full-screen windows, and it still flickers over them in the
+gap before it notices.
 
-**Above (`transparent`, "See-through background").** The widget stays top-level,
-layered and topmost, and presents through `UpdateLayeredWindow`. The taskbar
-genuinely shows through, translucency, gradient, wallpaper and all, because the
-widget is composited over it by DWM rather than painting a copy of it.
+One wrinkle: a layered window passes mouse messages through any pixel whose
+alpha is zero. A fully transparent background would hand the gaps between
+avatars back to the taskbar, and with them the moves that drive hover, the
+wheel and `WM_MOUSELEAVE`. The whole rectangle is filled with alpha 1 first —
+invisible, and enough to keep it hit-testable. TrafficMonitor carries the same
+workaround for a different reason: it nudges a pure black colour key to 1,
+because Windows 11 mishandles the fully transparent case there too.
 
-The cost is that the shell no longer manages it. A floating window is not
-hidden along with the taskbar, so it would sit on top of a full-screen game
-like a sticker; the anchor timer watches for a foreground window that covers a
-whole monitor and stands the widget down while there is one.
+For comparison, TrafficMonitor solves this with `SetLayeredWindowAttributes`
+and `LWA_COLORKEY` on its own child window — one nominated colour becomes a
+hole, and the background is a configured colour rather than a sampled one. That
+sidesteps "what colour is the taskbar" entirely, and works on a translucent
+bar, but it is 1-bit: every pixel is fully opaque or fully gone. Fine for text
+and bar graphs, wrong for anti-aliased avatar circles and speaking rings.
 
-The setting is fixed at window-creation time — it decides the extended style
-and whether the taskbar is our parent — so changing it rebuilds the widget
-windows rather than adjusting them.
-
-`--doctor` reports the colour the sampling resolves to and which of the two
-routes produced it. **Behind widget** (`taskbar_background`) overrides it with
-a fixed colour, for when neither is right.
+`background` (`#RRGGBBAA`) is drawn over that as a rounded rect, so it controls
+how much of a panel the widget looks like. `#00000000` is a bare overlay;
+something like `#2B2D31D8` reads as a translucent chip.
 
 ### Making it look built in
 
