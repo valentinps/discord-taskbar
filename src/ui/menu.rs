@@ -379,7 +379,13 @@ fn render(
 /// Map a click inside a volume row to a volume.
 /// The volume scale in force for whoever this menu is about.
 fn ceiling(style: &Style) -> f32 {
-    let current = style.participant.map(|p| p.volume).unwrap_or(0.0);
+    // Everything in this module is in the numbers the user sees, so the
+    // participant's stored amplitude has to be converted before being
+    // compared with them.
+    let current = style
+        .participant
+        .map(|p| style.theme.shown_volume(p.volume))
+        .unwrap_or(0.0);
     style.theme.volume_ceiling(current)
 }
 

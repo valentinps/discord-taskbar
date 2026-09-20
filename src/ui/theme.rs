@@ -62,7 +62,18 @@ pub struct Appearance {
     pub middle_click: String,
     /// Volume change per notch of the scroll wheel, over a participant.
     pub scroll_volume_step: i32,
+    /// Shape of Discord's volume curve; see `crate::volume`.
+    ///
+    /// Measured against a live client rather than documented, so it is a
+    /// setting: if Discord retunes the curve this is a number to change
+    /// rather than a rebuild.
+    pub volume_curve: f32,
+    /// Decibels Discord spreads the boost range (100%..200%) over.
+    pub volume_boost_db: f32,
     /// Top of the per-user volume scale, as a percentage.
+    ///
+    /// This is a *perceptual* percentage — the number Discord's own slider
+    /// shows — so it lines up with whatever limit the client allows.
     ///
     /// Discord's own limit is 200, and client plugins exist that raise it.
     /// Setting this to match such a plugin is what keeps the bar and the
@@ -111,6 +122,8 @@ impl Default for Appearance {
             show_leave_button: true,
             middle_click: "local_mute".to_string(),
             scroll_volume_step: 10,
+            volume_curve: crate::volume::DEFAULT_CURVE,
+            volume_boost_db: crate::volume::DEFAULT_BOOST_DB,
             max_volume: 200,
             monitors: vec!["primary".to_string()],
             x_offset: 0,
@@ -150,6 +163,8 @@ pub struct Theme {
     pub show_leave_button: bool,
     pub middle_click: MiddleClick,
     pub scroll_volume_step: i32,
+    pub volume_curve: f32,
+    pub volume_boost_db: f32,
     pub max_volume: f32,
     pub monitors: Vec<String>,
     pub x_offset: i32,
@@ -170,6 +185,18 @@ impl Theme {
     /// equal to the current volume would leave the bar full at every value
     /// above the configured maximum, which is no more informative than
     /// clipping it.
+    /// What Discord's own slider shows for a stored amplitude.
+    ///
+    /// RPC deals in amplitude; every number the user sees should be this.
+    pub fn shown_volume(&self, amplitude: f32) -> f32 {
+        crate::volume::amplitude_to_perceptual(amplitude, self.volume_curve, self.volume_boost_db)
+    }
+
+    /// The amplitude to store for a number the user chose.
+    pub fn stored_volume(&self, perceptual: f32) -> f32 {
+        crate::volume::perceptual_to_amplitude(perceptual, self.volume_curve, self.volume_boost_db)
+    }
+
     pub fn volume_ceiling(&self, current: f32) -> f32 {
         if current <= self.max_volume {
             return self.max_volume.max(1.0);
@@ -289,6 +316,8 @@ impl From<&Appearance> for Theme {
             show_leave_button: a.show_leave_button,
             middle_click: MiddleClick::parse(&a.middle_click),
             scroll_volume_step: a.scroll_volume_step.clamp(1, 50),
+            volume_curve: a.volume_curve.clamp(0.1, 10.0),
+            volume_boost_db: a.volume_boost_db.clamp(0.1, 60.0),
             max_volume: a.max_volume.clamp(100, 1000) as f32,
             monitors: if a.monitors.is_empty() {
                 vec!["primary".to_string()]

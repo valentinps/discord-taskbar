@@ -548,28 +548,51 @@ This exists because every interface change used to need a live call to look at,
 which made some paths awkward to check and others only reasonable about. It is
 the fastest way to work on anything visual.
 
-### Per-user volume, and plugins that raise the limit
+### Per-user volume
 
-Discord's per-user volume is a percentage from 0 to 200, and it comes over RPC
-as a float — `112.6076431274414` is a real reading from a real call. The widget
-shows it rounded and draws the bar against `max_volume`.
+Discord's slider is **perceptual** — logarithmic, because hearing is — while
+RPC reports the raw **amplitude** underneath. The two agree only at 0% and
+100% and diverge everywhere between, worst in the middle. Showing the
+amplitude raw meant the taskbar and Discord disagreed about the same number:
+amplitude 50 is 78% on Discord's slider.
 
-Client plugins exist that raise Discord's own 200% limit. With one in use the
-two disagree in both directions: Discord reports a volume the widget's scale
-cannot represent, so the bar pegs at full while the number keeps climbing, and
-anything the widget writes back gets clamped down to 200 — quietly dragging the
-volume down every time you touch it.
+`src/volume.rs` converts both ways. The interface works entirely in the
+numbers Discord shows; conversion happens only where Discord is read or
+written. The wheel moves in those numbers too — a notch used to step the
+amplitude, so it moved the slider by wildly different amounts depending on
+where it already was.
 
-Set `max_volume` to whatever the plugin allows (400, usually) and both agree
-again. `examples/volume_probe.rs` prints what Discord actually reports for
-everyone in the call, and with `--probe-max <user id>` walks one user's volume
-upward to find the ceiling Discord will really keep, restoring the original
-value afterwards.
+Above 100% this matches Discord's published curve
+(<https://github.com/discord/perceptual>) with its default 6 dB boost range.
+Below 100% it does **not** match that library's linear-in-decibels form.
+Measured against a live client it is a power law with exponent 2.8:
 
-If it is left unset, a volume above the ceiling grows the scale to the next
-whole hundred rather than clipping. That is a guard, not a substitute for
-setting it: it keeps the bar and the number from contradicting each other, but
-the scale then shifts as the volume crosses each hundred.
+| Discord shows | amplitude, computed | measured |
+|---------------|---------------------|----------|
+| 44            | 10.04               | 10       |
+| 50            | 14.36               | 14       |
+| 78            | 49.87               | 50       |
+| 151           | 142.23              | 142      |
+
+Those four pairs are unit tests, since the constants were derived by
+measurement rather than documentation. Both are settings — `volume_curve` and
+`volume_boost_db` — so retuning is a number to change rather than a rebuild.
+
+`examples/volume_probe.rs` prints what Discord reports for everyone in the
+call. `--set <id> --value <n>` writes one exact amplitude and stops, so the
+slider can be read against a number you chose; `--probe-max <id>` walks a
+user's volume up to find the ceiling Discord will actually keep.
+
+### Plugins that raise the 200% limit
+
+`max_volume` is the **perceptual** maximum — the number Discord's own slider
+shows. Set it to whatever the plugin allows, usually 400.
+
+If the numbers still disagree above 100%, the plugin has changed the boost
+range rather than extending it. Set Discord's slider to its new maximum, read
+the amplitude with `volume_probe`, and solve for `volume_boost_db`: a 400%
+slider reaching amplitude 794 means the range is unchanged at 6 dB, whereas
+one reaching 200 means it is about 2 dB.
 
 ## When nothing shows up
 

@@ -222,6 +222,28 @@ static FIELDS: &[Field] = &[
     },
     Field {
         section: "Participants",
+        label: "Volume curve",
+        kind: Kind::Text,
+        get: |c| format!("{:.2}", c.appearance.volume_curve),
+        set: |c, v| {
+            if let Ok(parsed) = v.trim().parse::<f32>() {
+                c.appearance.volume_curve = parsed;
+            }
+        },
+    },
+    Field {
+        section: "Participants",
+        label: "Volume boost dB",
+        kind: Kind::Text,
+        get: |c| format!("{:.2}", c.appearance.volume_boost_db),
+        set: |c, v| {
+            if let Ok(parsed) = v.trim().parse::<f32>() {
+                c.appearance.volume_boost_db = parsed;
+            }
+        },
+    },
+    Field {
+        section: "Participants",
         label: "Maximum volume %",
         kind: Kind::Number { min: 100, max: 1000 },
         get: |c| c.appearance.max_volume.to_string(),

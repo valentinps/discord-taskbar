@@ -531,18 +531,24 @@ impl App {
             return;
         }
 
+        // A notch moves the number the user can see, which is Discord's
+        // perceptual percentage — not the amplitude underneath it. Stepping
+        // the amplitude instead would move the slider by wildly different
+        // amounts depending on where it already was.
         let step = self.theme.scroll_volume_step as f32;
-        let ceiling = self.theme.volume_ceiling(participant.volume);
-        let volume = (participant.volume + notches as f32 * step).clamp(0.0, ceiling);
+        let shown = self.theme.shown_volume(participant.volume);
+        let ceiling = self.theme.volume_ceiling(shown);
+        let volume = (shown + notches as f32 * step).clamp(0.0, ceiling);
+        let amplitude = self.theme.stored_volume(volume);
         let name = participant.display_name.clone();
 
-        if !self.control.set_user_voice(&user_id, Some(volume), None) {
+        if !self.control.set_user_voice(&user_id, Some(amplitude), None) {
             return;
         }
 
         // Reflect it now; Discord's own event will confirm.
         if let Some(participant) = self.status.participant_mut(&user_id) {
-            participant.volume = volume;
+            participant.volume = amplitude;
         }
 
         self.volume_overlay = Some(VolumeOverlay {
@@ -591,8 +597,11 @@ impl App {
         }
     }
 
+    /// `volume` is what the user sees: a perceptual percentage, as on
+    /// Discord's own slider.
     fn set_user_volume(&mut self, user_id: &str, volume: f32, widget: HWND) {
-        if !self.control.set_user_voice(user_id, Some(volume), None) {
+        let amplitude = self.theme.stored_volume(volume);
+        if !self.control.set_user_voice(user_id, Some(amplitude), None) {
             return;
         }
         let name = self
@@ -604,7 +613,7 @@ impl App {
             .unwrap_or_default();
 
         if let Some(participant) = self.status.participant_mut(user_id) {
-            participant.volume = volume;
+            participant.volume = amplitude;
         }
         self.volume_overlay = Some(VolumeOverlay {
             user_id: user_id.to_string(),
@@ -855,7 +864,7 @@ impl App {
                     danger: participant.local_mute,
                 },
                 menu::Item::Volume {
-                    value: participant.volume,
+                    value: self.theme.shown_volume(participant.volume),
                 },
                 menu::Item::VolumePreset {
                     label: "Reset volume".to_string(),
@@ -892,8 +901,12 @@ impl App {
             // control is cheap to clone and borrows nothing else here.
             let control = self.control.clone();
             let applying_to = target.clone();
+            let curve = (self.theme.volume_curve, self.theme.volume_boost_db);
             let apply = move |volume: f32| {
-                control.set_user_voice(&applying_to, Some(volume), None);
+                // The bar hands back a perceptual percentage; Discord wants
+                // the amplitude.
+                let amplitude = crate::volume::perceptual_to_amplitude(volume, curve.0, curve.1);
+                control.set_user_voice(&applying_to, Some(amplitude), None);
             };
 
             let outcome = {
@@ -914,7 +927,7 @@ impl App {
             // Discord's own event will confirm it shortly.
             if let Some(volume) = outcome.volume {
                 if let Some(participant) = self.status.participant_mut(&target) {
-                    participant.volume = volume;
+                    participant.volume = self.theme.stored_volume(volume);
                 }
                 self.refresh();
             }

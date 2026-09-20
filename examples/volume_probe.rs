@@ -27,6 +27,13 @@ fn main() {
     }
 }
 
+/// A `--name value` pair from the command line.
+fn flag(name: &str) -> Option<String> {
+    let args: Vec<String> = std::env::args().collect();
+    let at = args.iter().position(|a| a == name)?;
+    args.get(at + 1).cloned()
+}
+
 fn run() -> Result<(), RpcError> {
     let (config, _) = Config::load_or_create();
     let mut client = RpcClient::connect(&config.discord.client_id)?;
@@ -73,14 +80,32 @@ fn run() -> Result<(), RpcError> {
     println!("Compare these with the per-user sliders in Discord itself.");
     println!("If they differ, the widget is not the thing converting them.");
 
-    if let Some(target) = std::env::args()
-        .position(|a| a == "--probe-max")
-        .and_then(|i| std::env::args().nth(i + 1))
-    {
+    // `--set <id> --value <n>` writes one exact volume and leaves it there, so
+    // Discord's own slider can be read against a number we chose. Comparing
+    // two readings passively cannot tell "the scales differ" apart from "the
+    // value moved between the two looks".
+    if let Some(user) = flag("--set") {
+        let value: f64 = flag("--value").and_then(|v| v.parse().ok()).unwrap_or(150.0);
+        let reply = client.call(
+            "SET_USER_VOICE_SETTINGS",
+            json!({ "user_id": user, "volume": value }),
+        )?;
+        let kept = reply
+            .get("volume")
+            .and_then(Value::as_f64)
+            .unwrap_or(f64::NAN);
+        println!();
+        println!("asked Discord for {value}, it kept {kept}");
+        println!("now read that user's slider in Discord and compare with {value}.");
+        return Ok(());
+    }
+
+    if let Some(target) = flag("--probe-max") {
         probe_ceiling(&mut client, &target, &states)?;
     } else {
         println!();
-        println!("Pass --probe-max <user id> to find the ceiling Discord will keep.");
+        println!("--set <id> --value <n>   write one exact volume and stop");
+        println!("--probe-max <id>         find the ceiling Discord will keep");
     }
 
     Ok(())
