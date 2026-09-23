@@ -7,6 +7,11 @@ Built in the spirit of [TrafficMonitor](https://github.com/zhongyang219/TrafficM
 a real Win32 child window of `Shell_TrayWnd`, so it works with third-party
 taskbars like StartAllBack instead of fighting them.
 
+It is two things in one repository: a **taskbar widget** that knows how to live
+in the taskbar and draw whatever it is given, and a **Discord integration** that
+tells it what to draw. The widget has no idea Discord exists — see
+[Writing an integration](#writing-an-integration).
+
 ```
 ┌──────────────────────────────────────────────────────────┐
 │  Conclave  ·  My Server        (◕)(◕)(◕)      🎙  🎧      │
@@ -201,61 +206,89 @@ Right-click the notification-area icon and choose **Settings**, or run
 grouped into sections across two columns, with a button that opens the Discord
 developer portal beside the credential fields.
 
-The window is driven by a single declarative table in `src/ui/settings.rs`:
+The window is driven by a list of `Field`s
+(`crates/taskbar-widget/src/ui/settings.rs`):
 
 ```rust
-struct Field {
-    section: &'static str,
-    label: &'static str,
-    kind: Kind,                    // Toggle | Number | Text | Choice
-    get: fn(&Config) -> String,
-    set: fn(&mut Config, &str),
+pub struct Field {
+    pub section: String,
+    pub label: String,
+    pub kind: Kind,   // Toggle | Number | Decimal | Text | List | Choice
+    pub path: String, // "appearance.height", "integrations.discord.client_id"
 }
 ```
 
-Adding a setting means adding one row — creating the control, filling it in,
-reading it back and laying it out all follow from `kind`. Saving re-reads the
-file from disk first, so keys the window does not show are preserved rather than
-overwritten with defaults, and changes apply immediately: fonts, icon fonts and
-the avatar cache are rebuilt and every surface repainted without a restart.
+A field names a dotted path into `config.json` rather than carrying a getter
+and a setter, which is what lets the window show the widget's rows and the
+integration's together without knowing anything about either. Adding a setting
+means adding one row — creating the control, filling it in, reading it back and
+laying it out all follow from `kind`.
+
+Saving re-reads the file from disk first, so keys the window does not show are
+preserved rather than overwritten with defaults, and changes apply immediately:
+fonts, icon fonts and the image cache are rebuilt, the integration re-reads its
+own section, and every surface repaints without a restart.
 
 ### The file
 
-Everything below lives under `"appearance"` in `config.json`. Metrics are in
-96-DPI pixels and are scaled automatically; colours are `#RRGGBB` or
-`#RRGGBBAA`.
+`config.json` has two halves, matching the two halves of the code:
+
+```json
+{
+  "appearance":   { ... how the widget looks ... },
+  "integrations": { "discord": { ... what Discord shows ... } }
+}
+```
+
+Metrics are in 96-DPI pixels and are scaled automatically; colours are
+`#RRGGBB` or `#RRGGBBAA`.
+
+**`appearance`** — the widget's own, and the same whatever it is showing:
 
 | Key | Default | Meaning |
 |---|---|---|
 | `background` | `#2B2D31D8` | Widget background |
-| `text` | `#DBDEE1` | Channel name |
-| `text_dim` | `#949BA4` | Server name, inactive icons |
-| `speaking` | `#23A559` | Speaking ring |
+| `text` | `#DBDEE1` | Primary label |
+| `text_dim` | `#949BA4` | Secondary label, inactive icons |
+| `accent` | `#23A559` | The "live" colour: speaking ring, slider fill. Still accepted as `speaking` |
 | `danger` | `#DA373C` | Mute/deafen |
+| `placeholder` | `#4E5058` | Stands in for a picture that has not downloaded yet |
+| `divider` | `#4E5058` | Colour of a rule between groups |
 | `corner_radius` | `6` | Background corner rounding |
 | `padding` | `10` | Inner horizontal padding |
-| `spacing` | `8` | Gap between elements |
+| `spacing` | `8` | Gap between blocks |
+| `font_size` | `12` | Label size |
+| `icon_size` | `16` | Glyph box size |
+| `height` | `32` | Widget height. **`0` fills the taskbar** |
+| `max_label_width` | `220` | Label width before ellipsising |
+| `monitors` | `["primary"]` | Which displays to show on: `["primary"]`, `["all"]`, or indices like `["0","1"]`. The tray menu's **Show on** submenu edits this |
+| `x_offset` / `y_offset` | `0` | Nudge the widget |
+
+**`integrations.discord`** — what this particular integration shows:
+
+| Key | Default | Meaning |
+|---|---|---|
+| `client_id` / `client_secret` | *(empty)* | Your Discord application |
 | `avatar_size` | `22` | Avatar diameter |
 | `avatar_overlap` | `6` | How much adjacent avatars overlap. `0` butts them together; **negative values leave a gap** |
 | `max_avatars` | `6` | Cap on avatars shown |
 | `sort_by_speaking` | `true` | Move whoever is talking to the front. Set `false` to keep a fixed order |
-| `font_size` | `12` | Label size |
-| `icon_size` | `16` | Mic/headphone glyph size |
-| `height` | `32` | Widget height. **`0` fills the taskbar** |
-| `max_label_width` | `220` | Label width before ellipsising |
 | `show_guild_icon` | `true` | Show the server's icon before the channel |
 | `guild_icon_size` | `18` | Server icon diameter |
 | `show_guild_name` | `false` | Show the server's *name* after the channel |
 | `show_self_icons` | `true` | Show your own mic/headphone state |
 | `clickable_self_icons` | `true` | Let clicking those glyphs toggle mute/deafen |
 | `show_divider` | `true` | Thin rule between participants and your controls |
-| `divider` | `#4E5058` | That rule's colour |
 | `show_leave_button` | `true` | Hang-up button to leave voice |
 | `middle_click` | `local_mute` | Middle-click on a participant: `local_mute`, `volume_reset` or `none` |
 | `scroll_volume_step` | `10` | Volume change per wheel notch |
 | `max_volume` | `200` | Top of the per-user volume scale, as a percentage |
-| `monitors` | `["primary"]` | Which displays to show on: `["primary"]`, `["all"]`, or indices like `["0","1"]`. The tray menu's **Show on** submenu edits this |
-| `x_offset` / `y_offset` | `0` | Nudge the widget |
+| `volume_curve` / `volume_boost_db` | measured | Shape of Discord's volume curve; see [Per-user volume](#per-user-volume) |
+
+A config written before the split is migrated on first load: the old top-level
+`discord` block and the Discord keys that used to sit in `appearance` are moved
+across with their values intact, and `speaking` keeps working as an alias for
+`accent`. Nothing is lost and nothing needs doing by hand.
 
 With `sort_by_speaking` on, and more people than `max_avatars`, speakers are
 kept first, then you, then everyone else alphabetically — so the cut falls on
@@ -272,7 +305,7 @@ Per-pixel alpha on a *child* window has worked since Windows 8. This project
 assumed otherwise for most of its life and went a long way around: sampling the
 taskbar's colour beside the widget and painting that. It worked on a plain bar,
 approximated a translucent one badly, and was the most expensive thing a
-refresh did. `examples/layered_child_probe.rs` checks the assumption directly,
+refresh did. `crates/taskbar-widget/examples/layered_child_probe.rs` checks the assumption directly,
 on the machine it runs on, and prints what it finds.
 
 Staying a child is the whole point. The shell clips, hides and z-orders the
@@ -323,13 +356,26 @@ stacking them.
 ## How it works
 
 ```
+crates/
+  taskbar-widget/       the shell — knows nothing about Discord
+  discord-integration/  one source of things to show
+  app/                  picks the integration, starts the widget
+installer/              embeds the app binary as a single-file setup
+```
+
+`cargo check -p taskbar-widget` builds the widget with the Discord crate
+nowhere in the graph. That is the whole point of the split: the boundary is
+something the compiler enforces, not a convention to be remembered.
+
+```
 Discord.exe ──(named pipe, event-driven)──► provider thread
-                                                 │  VoiceStatus snapshot
+                                                 │  ProviderEvent
                                                  ▼  PostMessage
-                                            host window (hidden, top-level)
-                                                 │
-                                                 ▼
-                                            widget window (child of Shell_TrayWnd)
+                                        ┌── host window (hidden, top-level)
+                                        │        │  Integration::blocks()
+                          Integration ──┤        ▼
+                        (Discord crate) │   widget window (child of Shell_TrayWnd)
+                                        └── Ui: menus, readouts, notices
 ```
 
 Two windows, deliberately:
@@ -349,7 +395,7 @@ These cost real debugging time and shaped the implementation:
 `CreateWindowExW` with `WS_CHILD` does not work. You have to create a top-level
 popup and then call `SetParent`, followed by setting `WS_CHILD` yourself —
 `SetParent` does not change the style bits. This is exactly what TrafficMonitor
-does, and now the reason is documented. See `examples/parent_probe.rs`.
+does, and now the reason is documented. See `crates/taskbar-widget/examples/parent_probe.rs`.
 
 **`UpdateLayeredWindow` silently does nothing on a child window.** It returns
 success, sets no error, and composites nothing. This is why TrafficMonitor
@@ -366,7 +412,7 @@ geometry turns to mush and a stroke scaled to 11% of an 11 px glyph is one
 pixel. Segoe Fluent Icons ships with Windows 11 and has properly hinted
 versions: `E720` microphone, `F781` microphone-off, `E7F6` headphones. There is
 no headphones-off glyph in either icon font, so that one gets a hand-drawn
-slash over the real glyph. `examples/glyph_probe.rs` is how those code points
+slash over the real glyph. `crates/taskbar-widget/examples/glyph_probe.rs` is how those code points
 were found.
 
 **Finding Discord's window needs more than the class name.**
@@ -384,7 +430,7 @@ returned — which only happened when Discord next sent an event. The symptom wa
 that clicking mute did nothing until somebody started or stopped speaking. The
 transport now opens the pipe with `FILE_FLAG_OVERLAPPED` and gives each
 direction its own `OVERLAPPED` and event; writes went from blocking
-indefinitely to 0.01 ms. `examples/pipe_concurrency_probe.rs` demonstrates both
+indefinitely to 0.01 ms. `crates/discord-integration/examples/pipe_concurrency_probe.rs` demonstrates both
 behaviours.
 
 **Reading the screen DC costs ~16 ms.** Sampling the taskbar colour forces the
@@ -418,7 +464,7 @@ Getting there needed one more thing. `UpdateLayeredWindow` documents `psize` as
 mandatory whenever `hdcSrc` is given, and passing `NULL` for it — intending
 "keep the current size", with `SetWindowPos` having already set it — produced a
 window that was created, visible, topmost, correctly sized and completely
-blank. `examples/popup_probe.rs --live` puts a real popup on screen for
+blank. `crates/discord-integration/examples/popup_probe.rs --live` puts a real popup on screen for
 inspection, which is the only way to tell "rendered correctly" apart from
 "presented correctly".
 
@@ -461,16 +507,89 @@ every ~5 seconds carrying a full ping history — 6.8 KB per event, measured.
 Deserialising that forever to display nothing is not worth it, so the app
 doesn't subscribe to it.
 
-### Adding a feature
+### Adding a feature to the Discord widget
 
-The widget's contents are a list of `Element`s (`src/ui/elements.rs`). An element
-measures itself and draws itself; layout, sizing and positioning are already
-handled. Adding a ping readout, a screenshare marker or a participant count means
-writing one `Element` and adding it to the list in `src/ui/host.rs`.
+The widget's contents are a list of blocks, built in
+`crates/discord-integration/src/view.rs`. Adding a ping readout, a screenshare
+marker or a participant count means pushing another block onto that list —
+layout, measurement, ellipsising and hit-testing already work for anything the
+block model can describe.
 
-The data side is behind `StatusProvider`-shaped plumbing in `src/provider/`. The
-UI consumes `ProviderEvent`s and doesn't know where they came from, so a second
-provider (a Vencord plugin, say) can be added without touching `src/ui/`.
+The data side is behind `provider/`. The integration consumes `ProviderEvent`s
+and doesn't know where they came from, so a second provider (a Vencord plugin,
+say) can be added without touching the view.
+
+## Writing an integration
+
+An integration is a crate that depends on `taskbar-widget` and implements
+`ui::integration::Integration`. It never touches a window handle. Everything it
+puts on screen it describes as data; everything it wants done it asks for
+through `Ui`.
+
+**Blocks** are what the widget draws (`ui::block`). Six shapes cover the whole
+of the Discord widget:
+
+| | |
+|---|---|
+| `Image` | A picture, optionally with a ring round it and a badge in the corner. Circle, square or rounded |
+| `Text` | Runs of coloured text on one line. The first run has priority when space runs out, so it is the *last* run that loses characters |
+| `Icon` | One glyph from Windows' icon font |
+| `Rule` | A thin vertical separator |
+| `Cluster` | Several blocks packed tighter than normal — a positive overlap stacks them like avatars, a negative one just narrows the gap |
+
+Sizes are at 96 DPI; the widget scales them, because there may be several
+displays with different DPI and the integration does not know which one it is
+about to be drawn on.
+
+Give a block an **id** and it becomes interactive: it gets the hand cursor, and
+clicks, wheel notches, middle clicks and hovers come back to
+`on_interaction` carrying that id. The convention is a namespaced string —
+`user:123`, `self:mute`. Anything without an id is scenery.
+
+**The trait**, in the order it is used:
+
+```rust
+fn id(&self) -> &'static str;            // namespaces its config section
+fn name(&self) -> &str;                  // tray tooltip, window titles
+fn tray_icon(&self) -> (Glyph, Color);   // the notification-area picture
+fn apply_settings(&mut self, &Value);    // its own slice of config.json
+fn start(&mut self, events: EventSink);  // spawn background work
+fn on_event(&mut self, Event, &mut dyn Ui) -> bool;   // -> redraw?
+fn blocks(&self, theme: &Theme) -> Vec<Block>;
+fn tooltip(&self) -> String;
+fn on_interaction(&mut self, Interaction, &mut dyn Ui);
+fn tray_items(&self) -> Vec<TrayItem>;   // extra rows, ids from TRAY_ID_BASE
+fn on_tray_command(&mut self, usize, &mut dyn Ui);
+fn settings_fields(&self) -> Vec<Field>; // rows in the settings window
+fn settings_intro(&self) -> Option<Intro>;
+```
+
+Only `blocks`, `id`, `name`, `tray_icon`, `start`, `on_event`, `tooltip` and
+`on_interaction` are required; the rest have defaults that do nothing.
+
+**Background work** posts through `EventSink`, which carries a
+`Box<dyn Any + Send>` through the window message queue — so events arrive on
+the UI thread, in order, without a lock, and `on_event` downcasts back to the
+integration's own type.
+
+**`Ui`** is what an integration may ask for: `show_menu` (blocks until the menu
+closes, and reports where a dismissing click landed, which is what lets a click
+on the next avatar move the menu there), `show_meter` / `hide_meter` for the
+one-line readout above the taskbar, `notice` to put a message on the widget in
+place of its contents, `block_at` to map a screen point back to a block, and
+`redraw`.
+
+**Settings** are addressed by a dotted path into `config.json` —
+`integrations.<id>.<key>` — so the settings window shows the widget's rows and
+the integration's together without knowing anything about either.
+
+**Diagnostics** work the same way: `--doctor` runs out of process and builds a
+`ui::doctor::Report` from the integration — a heading, the checks answerable
+from disk, a slower `probe` run behind a "checking..." placeholder, and
+optionally a button that tries something for real.
+
+The Discord crate is the worked example, and it is small: the whole of it that
+the widget can see is `lib.rs`, `view.rs` and `settings.rs`.
 
 ## Known limitations
 
@@ -556,7 +675,7 @@ RPC reports the raw **amplitude** underneath. The two agree only at 0% and
 amplitude raw meant the taskbar and Discord disagreed about the same number:
 amplitude 50 is 78% on Discord's slider.
 
-`src/volume.rs` converts both ways. The interface works entirely in the
+`crates/discord-integration/src/volume.rs` converts both ways. The interface works entirely in the
 numbers Discord shows; conversion happens only where Discord is read or
 written. The wheel moves in those numbers too — a notch used to step the
 amplitude, so it moved the slider by wildly different amounts depending on
@@ -578,7 +697,7 @@ Those four pairs are unit tests, since the constants were derived by
 measurement rather than documentation. Both are settings — `volume_curve` and
 `volume_boost_db` — so retuning is a number to change rather than a rebuild.
 
-`examples/volume_probe.rs` prints what Discord reports for everyone in the
+`crates/discord-integration/examples/volume_probe.rs` prints what Discord reports for everyone in the
 call. `--set <id> --value <n>` writes one exact amplitude and stops, so the
 slider can be read against a number you chose; `--probe-max <id>` walks a
 user's volume up to find the ceiling Discord will actually keep.
@@ -645,6 +764,9 @@ paste into a chat window.
 
 ## Diagnostics
 
+The probes live with the crate they exercise, but their names are unique
+across the workspace, so cargo finds them without a `-p`.
+
 | | |
 |---|---|
 | `cargo run --example rpc_probe` | Connect to Discord and dump live voice events. The first thing to run if the widget isn't updating. |
@@ -662,31 +784,55 @@ paste into a chat window.
 | `cargo run --release --example menu_probe` | Show the drawn user menu on its own, which separates "does it render" from "does a click reach it". |
 | `cargo run --release --example popup_probe` | Render the volume popup at several levels over a chequerboard, to check the alpha and the rounded corners. Add `-- --live` to put a real popup on screen instead. |
 | `cargo run --release --example pipe_concurrency_probe` | Check that a write can proceed while a read is parked. Writes taking longer than a millisecond mean the transport has regressed to synchronous I/O. |
+| `cargo run --example report_probe` | Print the whole diagnostics report as text, without opening a window. |
+| `cargo run --example migrate_probe` | Feed a pre-split `config.json` through the loader and print what came out, to check nothing was dropped on the way. |
 
 ## Layout
 
 ```
-src/
-  config.rs              config.json load/save
-  http.rs                minimal HTTPS over WinHTTP
-  model.rs               VoiceStatus / Participant — provider-agnostic
-  provider/
-    mod.rs               ProviderEvent, ProviderSink, ProviderControl
-    rpc/
-      pipe.rs            named-pipe transport and frame codec
-      mod.rs             RpcClient: commands, events, nonce matching
-      oauth.rs           AUTHORIZE → token → AUTHENTICATE, token cache
-      events.rs          subscription bookkeeping
-      session.rs         event loop folding events into VoiceStatus
-  ui/
-    host.rs              hidden owner window, state, timer
-    widget.rs            the taskbar child window
-    taskbar.rs           Shell_TrayWnd discovery, geometry, colour sampling
-    render.rs            DIB canvas, compositing, text, shapes
-    elements.rs          Element trait and the built-in elements
-    theme.rs             colours and metrics
-    tray.rs              notification icon and menu
-  assets/
-    avatars.rs           WinHTTP fetch + WIC decode + two-level cache
-    icons.rs             procedurally drawn mic/headphone glyphs
+crates/
+  taskbar-widget/          the shell. Builds with no integration in the graph.
+    src/
+      config.rs            config.json load/save, per-integration sections
+      http.rs              minimal HTTPS over WinHTTP
+      ui/
+        integration.rs     the whole contract: Integration, Ui, EventSink
+        block.rs           what gets drawn, as data: layout and hit-testing
+        host.rs            hidden owner window, state, timer
+        widget.rs          the taskbar child window
+        taskbar.rs         Shell_TrayWnd discovery, geometry, colour sampling
+        render.rs          DIB canvas, compositing, text, shapes
+        menu.rs            the drawn menu: rows, slider, modal loop
+        popup.rs           the one-line readout above the taskbar
+        settings.rs        settings window, driven by Field paths
+        doctor.rs          diagnostics window and the widget's own checks
+        theme.rs           colours and metrics
+        tray.rs            notification icon and menu
+        controls.rs        thin Win32 control helpers
+      assets/
+        images.rs          WinHTTP fetch + WIC decode + two-level cache
+        icons.rs           resolving and drawing glyphs from Segoe's icon fonts
+
+  discord-integration/     one source of things to show
+    src/
+      lib.rs               impl Integration: state, gestures, the user menu
+      view.rs              VoiceStatus -> blocks. All of what is on screen
+      settings.rs          its own config section, and the settings rows
+      model.rs             VoiceStatus / Participant — provider-agnostic
+      volume.rs            Discord's perceptual volume curve, both ways
+      icons.rs             the code points it draws
+      window.rs            finding and raising the Discord window
+      doctor.rs            its half of the diagnostics report
+      provider/
+        mod.rs             ProviderEvent, ProviderControl
+        rpc/
+          pipe.rs          named-pipe transport and frame codec
+          mod.rs           RpcClient: commands, events, nonce matching
+          oauth.rs         AUTHORIZE -> token -> AUTHENTICATE, token cache
+          events.rs        subscription bookkeeping
+          session.rs       event loop folding events into VoiceStatus
+
+  app/src/main.rs          the only file that names both crates
+
+installer/                 single-file setup that embeds the app binary
 ```
