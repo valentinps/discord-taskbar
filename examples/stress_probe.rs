@@ -11,9 +11,8 @@ use windows::Win32::System::Threading::GetCurrentProcess;
 use discord_taskbar::assets::icons::IconFonts;
 use discord_taskbar::assets::images::ImageCache;
 use discord_taskbar::model::{Participant, VoiceStatus};
-use discord_taskbar::ui::elements::{
-    self, AvatarRow, ChannelLabel, Context, Element, GuildIcon, SelfStatusIcons, Separator,
-};
+use discord_taskbar::integration::discord::view;
+use discord_taskbar::ui::block::{self, Context};
 use discord_taskbar::ui::render::{Canvas, Color, Font};
 use discord_taskbar::ui::theme::{Appearance, Theme};
 use discord_taskbar::ui::Notifier;
@@ -28,14 +27,6 @@ fn main() {
     let mut images = ImageCache::new(Notifier::new(HWND(std::ptr::null_mut()), 0));
     let mut icon_fonts = IconFonts::new();
     let font = Font::system_ui(theme.font_size, false).expect("font");
-
-    let elements: Vec<Box<dyn Element>> = vec![
-        Box::new(GuildIcon),
-        Box::new(Separator),
-        Box::new(ChannelLabel),
-        Box::new(AvatarRow),
-        Box::new(SelfStatusIcons),
-    ];
 
     let mut status = base();
     let mut canvas = Canvas::new(260, height).expect("canvas");
@@ -61,8 +52,8 @@ fn main() {
             theme.background,
         );
 
+        let blocks = view::blocks(&status, &theme);
         let mut ctx = Context {
-            status: &status,
             theme: &theme,
             font: &font,
             icon_fonts: &mut icon_fonts,
@@ -70,7 +61,7 @@ fn main() {
             backdrop: Color::rgb(0, 0, 0),
             dpi: 96,
         };
-        elements::layout(&mut canvas, &mut ctx, &elements, height, true);
+        block::layout(&mut canvas, &mut ctx, &blocks, height, true);
 
         if frame % REPORT_EVERY == 0 {
             report(frame);

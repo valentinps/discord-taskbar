@@ -9,10 +9,8 @@ use windows::Win32::Foundation::{HWND, RECT};
 use discord_taskbar::assets::icons::IconFonts;
 use discord_taskbar::assets::images::ImageCache;
 use discord_taskbar::model::{Participant, VoiceStatus};
-use discord_taskbar::ui::elements::{
-    self, AvatarRow, ChannelLabel, Context, Divider, Element, GuildIcon, LeaveButton,
-    SelfStatusIcons, Separator,
-};
+use discord_taskbar::integration::discord::view;
+use discord_taskbar::ui::block::{self, Context};
 use discord_taskbar::ui::render::{Canvas, Color, Font};
 use discord_taskbar::ui::theme::{Appearance, Theme};
 use discord_taskbar::ui::Notifier;
@@ -86,7 +84,6 @@ fn main() {
         let status = base();
         let mut probe = Canvas::new(1, 1).expect("probe canvas");
         let mut ctx = Context {
-            status: &status,
             theme: &theme,
             font: &font,
             icon_fonts: &mut icon_fonts,
@@ -94,33 +91,15 @@ fn main() {
             backdrop: theme.background,
             dpi: 96,
         };
-        for element in [
-            Box::new(GuildIcon) as Box<dyn Element>,
-            Box::new(AvatarRow),
-        ] {
-            element.measure(&probe, &mut ctx);
-            element.draw(
-                &mut probe,
-                &mut ctx,
-                RECT { left: 0, top: 0, right: 1, bottom: 1 },
-            );
-        }
+        // Laying out once queues every avatar and the server icon.
+        let blocks = view::blocks(&status, &theme);
+        block::layout(&mut probe, &mut ctx, &blocks, height, true);
     }
     // Give the fetch worker a moment; probes are allowed to be patient.
     for _ in 0..50 {
         images.collect();
         std::thread::sleep(std::time::Duration::from_millis(100));
     }
-
-    let elements: Vec<Box<dyn Element>> = vec![
-        Box::new(GuildIcon),
-        Box::new(Separator),
-        Box::new(ChannelLabel),
-        Box::new(AvatarRow),
-        Box::new(Divider),
-        Box::new(SelfStatusIcons),
-        Box::new(LeaveButton),
-    ];
 
     // Per-case theme tweaks, so the config options are exercised too.
     let themes: Vec<Theme> = cases
@@ -145,8 +124,8 @@ fn main() {
     let mut widths = Vec::new();
     for (index, (_, status)) in cases.iter().enumerate() {
         let mut scratch = Canvas::new(1, height).expect("scratch");
+        let blocks = view::blocks(status, &themes[index]);
         let mut ctx = Context {
-            status,
             theme: &themes[index],
             font: &font,
             icon_fonts: &mut icon_fonts,
@@ -154,9 +133,7 @@ fn main() {
             backdrop: theme.background,
             dpi: 96,
         };
-        widths.push(
-            elements::layout(&mut scratch, &mut ctx, &elements, height, false).width,
-        );
+        widths.push(block::layout(&mut scratch, &mut ctx, &blocks, height, false).width);
     }
 
     let widest = widths.iter().copied().max().unwrap_or(200);
@@ -201,8 +178,8 @@ fn main() {
             themes[index].background,
         );
 
+        let blocks = view::blocks(status, &themes[index]);
         let mut ctx = Context {
-            status,
             theme: &themes[index],
             font: &font,
             icon_fonts: &mut icon_fonts,
@@ -210,7 +187,7 @@ fn main() {
             backdrop: Color::rgb(0, 0, 0),
             dpi: 96,
         };
-        elements::layout(&mut row, &mut ctx, &elements, height, true);
+        block::layout(&mut row, &mut ctx, &blocks, height, true);
 
         let pixels = row.snapshot();
         let row_width = row.width();

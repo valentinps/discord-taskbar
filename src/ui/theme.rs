@@ -22,6 +22,8 @@ pub struct Appearance {
     pub speaking: String,
     /// Muted / deafened badge fill.
     pub danger: String,
+    /// Stands in for a picture that has not downloaded yet.
+    pub placeholder: String,
 
     pub corner_radius: i32,
     pub padding: i32,
@@ -99,6 +101,7 @@ impl Default for Appearance {
             // Discord's speaking green.
             speaking: "#23A559".to_string(),
             danger: "#DA373C".to_string(),
+            placeholder: "#4E5058".to_string(),
 
             corner_radius: 6,
             padding: 10,
@@ -140,6 +143,7 @@ pub struct Theme {
     pub text_dim: Color,
     pub speaking: Color,
     pub danger: Color,
+    pub placeholder: Color,
 
     pub corner_radius: i32,
     pub padding: i32,
@@ -291,6 +295,7 @@ impl From<&Appearance> for Theme {
             text_dim: parse(&a.text_dim, Color::rgb(0x94, 0x9B, 0xA4)),
             speaking: parse(&a.speaking, Color::rgb(0x23, 0xA5, 0x59)),
             danger: parse(&a.danger, Color::rgb(0xDA, 0x37, 0x3C)),
+            placeholder: parse(&a.placeholder, Color::rgb(0x4E, 0x50, 0x58)),
 
             corner_radius: a.corner_radius.max(0),
             padding: a.padding.max(0),

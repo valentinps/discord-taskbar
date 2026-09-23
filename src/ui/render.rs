@@ -500,6 +500,65 @@ impl Canvas {
     /// Draw `bitmap` clipped to a circle, scaling it to `diameter`.
     /// Nearest-neighbour is fine because avatars are fetched at roughly the
     /// size they are drawn.
+    /// Draw `bitmap` stretched to fill `left..right` by `top..bottom`, masked
+    /// to a rounded rectangle.
+    ///
+    /// A `radius` of zero gives a plain rectangle; a radius of half the
+    /// shorter side or more gives a circle or a stadium. One function for all
+    /// three because the mask is a signed distance either way, and sharing it
+    /// is what keeps an image's edge identical to the ring drawn around it.
+    #[allow(clippy::too_many_arguments)]
+    pub fn draw_bitmap_shaped(
+        &mut self,
+        bitmap: &Bitmap,
+        left: f32,
+        top: f32,
+        width: f32,
+        height: f32,
+        radius: f32,
+        opacity: f32,
+    ) {
+        if bitmap.width <= 0 || bitmap.height <= 0 || width <= 0.0 || height <= 0.0 {
+            return;
+        }
+
+        let (half_w, half_h) = (width / 2.0, height / 2.0);
+        let (cx, cy) = (left + half_w, top + half_h);
+        let radius = radius.clamp(0.0, half_w.min(half_h));
+
+        // One pixel of slack all round, so the antialiased edge is not clipped.
+        let x0 = (left - 1.0).floor() as i32;
+        let x1 = (left + width + 1.0).ceil() as i32;
+        let y0 = (top - 1.0).floor() as i32;
+        let y1 = (top + height + 1.0).ceil() as i32;
+
+        for y in y0..y1 {
+            for x in x0..x1 {
+                let dx = x as f32 + 0.5 - cx;
+                let dy = y as f32 + 0.5 - cy;
+
+                // Signed distance to a rounded box: positive outside.
+                let qx = dx.abs() - half_w + radius;
+                let qy = dy.abs() - half_h + radius;
+                let outside = (qx.max(0.0).powi(2) + qy.max(0.0).powi(2)).sqrt();
+                let inside = qx.max(qy).min(0.0);
+                let distance = outside + inside - radius;
+
+                let coverage = edge_coverage(-distance);
+                if coverage <= 0.0 {
+                    continue;
+                }
+
+                let u = ((dx + half_w) / width * bitmap.width as f32) as i32;
+                let v = ((dy + half_h) / height * bitmap.height as f32) as i32;
+                let texel = bitmap.get(u.clamp(0, bitmap.width - 1), v.clamp(0, bitmap.height - 1));
+
+                self.blend(x, y, scale_premultiplied(texel, coverage * opacity));
+            }
+        }
+    }
+
+    /// Draw `bitmap` as a circle of `diameter` centred on `(cx, cy)`.
     pub fn draw_circular_bitmap(
         &mut self,
         bitmap: &Bitmap,
@@ -508,32 +567,16 @@ impl Canvas {
         diameter: f32,
         opacity: f32,
     ) {
-        if bitmap.width <= 0 || bitmap.height <= 0 {
-            return;
-        }
-
         let radius = diameter / 2.0;
-        let x0 = (cx - radius - 1.0).floor() as i32;
-        let x1 = (cx + radius + 1.0).ceil() as i32;
-        let y0 = (cy - radius - 1.0).floor() as i32;
-        let y1 = (cy + radius + 1.0).ceil() as i32;
-
-        for y in y0..y1 {
-            for x in x0..x1 {
-                let dx = x as f32 + 0.5 - cx;
-                let dy = y as f32 + 0.5 - cy;
-                let coverage = edge_coverage(radius - (dx * dx + dy * dy).sqrt());
-                if coverage <= 0.0 {
-                    continue;
-                }
-
-                let u = ((dx + radius) / diameter * bitmap.width as f32) as i32;
-                let v = ((dy + radius) / diameter * bitmap.height as f32) as i32;
-                let texel = bitmap.get(u.clamp(0, bitmap.width - 1), v.clamp(0, bitmap.height - 1));
-
-                self.blend(x, y, scale_premultiplied(texel, coverage * opacity));
-            }
-        }
+        self.draw_bitmap_shaped(
+            bitmap,
+            cx - radius,
+            cy - radius,
+            diameter,
+            diameter,
+            radius,
+            opacity,
+        );
     }
 
     pub fn measure_text(&self, text: &str, font: &Font) -> (i32, i32) {

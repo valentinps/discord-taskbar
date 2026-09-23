@@ -15,16 +15,14 @@ use windows::Win32::UI::WindowsAndMessaging::*;
 
 use crate::assets::icons::IconFonts;
 use crate::integration::discord::icons as glyphs;
+use crate::integration::discord::view;
 use crate::assets::images::ImageCache;
 use crate::config::Config;
 use crate::model::VoiceStatus;
 use crate::provider::{self, ProviderControl, ProviderEvent, ProviderSink};
 
 use super::menu;
-use super::elements::{
-    self, Action, AvatarRow, ChannelLabel, Context, Divider, Element, GuildIcon, LeaveButton,
-    SelfStatusIcons, Separator,
-};
+use super::block::{self, BlockId, Context};
 use super::render::{Canvas, Color, Font};
 use super::taskbar::{self, Anchor, Edge, TaskbarInfo, DEFAULT_DPI};
 use super::settings;
@@ -80,9 +78,9 @@ struct Surface {
     parented: bool,
     taskbar: TaskbarInfo,
     canvas: Option<Canvas>,
-    /// Where each element was last drawn, so a click can be routed back to
-    /// whichever one owns that pixel.
-    element_bounds: Vec<RECT>,
+    /// Where everything was last drawn, so a click can be routed back to
+    /// whichever block owns that pixel.
+    layout: Option<block::Layout>,
 }
 
 struct App {
@@ -96,7 +94,6 @@ struct App {
     status: VoiceStatus,
     images: ImageCache,
     icon_fonts: IconFonts,
-    elements: Vec<Box<dyn Element>>,
     /// Shown instead of the status when something needs the user's attention.
     notice: Option<String>,
     /// When set, `notice` clears itself at this time.
@@ -121,15 +118,6 @@ impl App {
             status: VoiceStatus::default(),
             images: ImageCache::new(Notifier::new(host, WM_APP_ASSET_READY)),
             icon_fonts: IconFonts::new(),
-            elements: vec![
-                Box::new(GuildIcon),
-                Box::new(Separator),
-                Box::new(ChannelLabel),
-                Box::new(AvatarRow),
-                Box::new(Divider),
-                Box::new(SelfStatusIcons),
-                Box::new(LeaveButton),
-            ],
             notice: None,
             notice_expires: None,
             volume_overlay: None,
@@ -235,7 +223,7 @@ impl App {
                         parented,
                         taskbar: bar,
                         canvas: None,
-                        element_bounds: Vec::new(),
+                        layout: None,
                     });
                 }
             }
@@ -376,9 +364,9 @@ impl App {
         }
     }
 
-    /// Run the element layout for one surface, optionally drawing.
+    /// Lay the blocks out for one surface, optionally drawing them.
     ///
-    /// Takes the canvas and font out of `self` for the duration so the element
+    /// Takes the canvas and font out of `self` for the duration so the block
     /// context can borrow the rest mutably.
     fn run_layout(&mut self, index: usize, height: i32, draw: bool) -> Option<i32> {
         let dpi = self.surfaces.get(index)?.taskbar.dpi;
@@ -409,11 +397,11 @@ impl App {
                     self.theme.text_dim,
                 );
             }
-            self.surfaces[index].element_bounds.clear();
+            self.surfaces[index].layout = None;
             text_width + padding * 2
         } else {
+            let blocks = view::blocks(&self.status, &self.theme);
             let mut ctx = Context {
-                status: &self.status,
                 theme: &self.theme,
                 font: &font,
                 icon_fonts: &mut self.icon_fonts,
@@ -421,9 +409,10 @@ impl App {
                 backdrop: self.theme.background,
                 dpi,
             };
-            let layout = elements::layout(&mut canvas, &mut ctx, &self.elements, height, draw);
-            self.surfaces[index].element_bounds = layout.bounds;
-            layout.width
+            let layout = block::layout(&mut canvas, &mut ctx, &blocks, height, draw);
+            let width = layout.width;
+            self.surfaces[index].layout = Some(layout);
+            width
         };
 
         self.surfaces[index].canvas = Some(canvas);
@@ -443,73 +432,45 @@ impl App {
 
     /// Route a click in a widget to whichever element owns that pixel.
     fn on_widget_click(&mut self, widget: HWND, point: POINT) {
-        match self.action_at(widget, point) {
-            Some(Action::ToggleMute) => self.toggle_mute(),
-            Some(Action::ToggleDeafen) => self.toggle_deafen(),
-            Some(Action::LeaveVoice) => {
+        let Some(id) = self.block_at(widget, point) else {
+            return;
+        };
+
+        match id.as_str() {
+            view::ID_MUTE => self.toggle_mute(),
+            view::ID_DEAFEN => self.toggle_deafen(),
+            view::ID_LEAVE => {
                 self.control.leave_voice();
             }
-            Some(Action::UserMenu(user_id)) => self.show_user_menu(widget, &user_id),
             // Only the server icon and the channel name jump to Discord;
             // clicking a participant is for acting on that participant.
-            Some(Action::FocusDiscord) => {
+            view::ID_FOCUS => {
                 tray::focus_discord();
             }
-            None => {}
+            _ => {
+                if let Some(user_id) = view::user_of(&id) {
+                    let user_id = user_id.to_string();
+                    self.show_user_menu(widget, &user_id);
+                }
+            }
         }
     }
 
     /// Whether a point is worth showing a hand cursor over.
     fn is_interactive(&mut self, widget: HWND, point: POINT) -> bool {
-        self.action_at(widget, point).is_some()
+        self.block_at(widget, point).is_some()
     }
 
-    fn action_at(&mut self, widget: HWND, point: POINT) -> Option<Action> {
+    /// Which block is under a point in a widget's client area.
+    fn block_at(&self, widget: HWND, point: POINT) -> Option<BlockId> {
         let index = self.surface_index(widget)?;
-        let dpi = self.surfaces[index].taskbar.dpi;
-        let bounds = self.surfaces[index].element_bounds.clone();
-        let font = self.font_for(dpi)?;
-
-        let action = {
-            let ctx = Context {
-                status: &self.status,
-                theme: &self.theme,
-                font: &font,
-                icon_fonts: &mut self.icon_fonts,
-                images: &mut self.images,
-                backdrop: self.theme.background,
-                dpi,
-            };
-            elements::hit_test(&ctx, &self.elements, &bounds, point)
-        };
-        self.return_font(dpi, font);
-        action
+        self.surfaces[index].layout.as_ref()?.hit(point)
     }
 
+    /// Which participant is under a point, for the wheel and middle button.
     fn user_at(&mut self, widget: HWND, point: POINT) -> Option<String> {
-        let index = self.surface_index(widget)?;
-        let dpi = self.surfaces[index].taskbar.dpi;
-        let bounds = self.surfaces[index].element_bounds.clone();
-        let font = self.font_for(dpi)?;
-
-        let user = {
-            let ctx = Context {
-                status: &self.status,
-                theme: &self.theme,
-                font: &font,
-                icon_fonts: &mut self.icon_fonts,
-                images: &mut self.images,
-                backdrop: self.theme.background,
-                dpi,
-            };
-            self.elements
-                .iter()
-                .zip(bounds.iter())
-                .filter(|(_, rect)| rect.right > rect.left)
-                .find_map(|(element, rect)| element.user_at(&ctx, *rect, point))
-        };
-        self.return_font(dpi, font);
-        user
+        let id = self.block_at(widget, point)?;
+        view::user_of(&id).map(|user| user.to_string())
     }
 
     /// Wheel over a participant adjusts how loud they are, locally.

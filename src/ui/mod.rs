@@ -9,9 +9,9 @@
 //! * The **widget** is a `WS_CHILD` of `Shell_TrayWnd`. Explorer destroys it
 //!   when it restarts, which is fine: the host simply builds another.
 
+pub mod block;
 pub mod controls;
 pub mod doctor;
-pub mod elements;
 pub mod host;
 pub mod menu;
 pub mod popup;
