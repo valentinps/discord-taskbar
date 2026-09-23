@@ -12,7 +12,7 @@ use std::time::Instant;
 use serde_json::{json, Value};
 
 use discord_taskbar::config::Config;
-use discord_taskbar::provider::rpc::{events, oauth, RpcClient, RpcError};
+use discord_taskbar::integration::discord::provider::rpc::{events, oauth, RpcClient, RpcError};
 
 fn main() {
     if let Err(e) = run() {

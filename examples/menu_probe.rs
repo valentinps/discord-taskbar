@@ -10,7 +10,7 @@ use discord_taskbar::assets::icons::IconFonts;
 use discord_taskbar::integration::discord::icons as glyphs;
 use discord_taskbar::integration::discord::view;
 use discord_taskbar::assets::images::ImageCache;
-use discord_taskbar::model::Participant;
+use discord_taskbar::integration::discord::model::Participant;
 use discord_taskbar::ui::menu::{self, Item};
 use discord_taskbar::ui::render::Font;
 use discord_taskbar::ui::taskbar;

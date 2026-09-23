@@ -11,8 +11,9 @@ use serde_json::Value;
 
 use super::{events, oauth, Event, RpcClient, RpcError, Result};
 use crate::config::Credentials;
-use crate::model::{ConnectionState, Participant, VoiceStatus};
-use crate::provider::{ProviderControl, ProviderEvent, ProviderSink};
+use crate::integration::discord::model::{ConnectionState, Participant, VoiceStatus};
+use crate::integration::discord::provider::{ProviderControl, ProviderEvent};
+use crate::ui::integration::EventSink;
 
 /// Reconnect backoff bounds. Discord being closed is normal, not an error, so
 /// we retry quietly rather than giving up.
@@ -20,7 +21,7 @@ const BACKOFF_MIN: Duration = Duration::from_secs(2);
 const BACKOFF_MAX: Duration = Duration::from_secs(30);
 
 /// Run forever: connect, serve events, reconnect on failure.
-pub fn run(creds: Credentials, sink: ProviderSink, control: ProviderControl) {
+pub fn run(creds: Credentials, sink: EventSink, control: ProviderControl) {
     let mut backoff = BACKOFF_MIN;
 
     loop {
@@ -49,7 +50,7 @@ pub fn run(creds: Credentials, sink: ProviderSink, control: ProviderControl) {
     }
 }
 
-fn session(creds: &Credentials, sink: &ProviderSink, control: &ProviderControl) -> Result<()> {
+fn session(creds: &Credentials, sink: &EventSink, control: &ProviderControl) -> Result<()> {
     let mut client = RpcClient::connect(&creds.client_id)?;
     control.attach(client.raw_handle(), client.shared_writer());
 

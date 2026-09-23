@@ -1,9 +1,9 @@
 //! Sources of Discord state.
 //!
-//! The UI consumes `ProviderEvent`s and never learns which provider produced
-//! them. Today that is the RPC provider; a Vencord plugin could be added as a
-//! second source (for things RPC does not expose, such as a real unread count)
-//! without the taskbar widget changing at all.
+//! The integration consumes `ProviderEvent`s and never learns which provider
+//! produced them. Today that is the RPC provider; a Vencord plugin could be
+//! added as a second source (for things RPC does not expose, such as a real
+//! unread count) without anything above here changing.
 
 pub mod rpc;
 
@@ -12,12 +12,9 @@ use std::sync::{Arc, Mutex};
 
 use serde_json::{json, Value};
 
-use windows::Win32::Foundation::{HWND, LPARAM, WPARAM};
-use windows::Win32::UI::WindowsAndMessaging::PostMessageW;
-
 use crate::config::Credentials;
-use crate::model::StatusSnapshot;
-use crate::ui::WM_APP_STATUS;
+use crate::integration::discord::model::StatusSnapshot;
+use crate::ui::integration::EventSink;
 
 /// Everything a provider can tell the UI.
 #[derive(Debug, Clone)]
@@ -30,63 +27,6 @@ pub enum ProviderEvent {
     CommandFailed(String),
     /// Lost contact, with a human-readable reason.
     Offline(String),
-}
-
-/// Posts provider events to the UI thread's message queue.
-///
-/// Cloneable and `Send`: the provider thread owns one, the UI thread owns the
-/// window it targets.
-#[derive(Clone)]
-pub struct ProviderSink {
-    target: Arc<AtomicIsize>,
-}
-
-impl ProviderSink {
-    pub fn new(target: HWND) -> Self {
-        ProviderSink {
-            target: Arc::new(AtomicIsize::new(target.0 as isize)),
-        }
-    }
-
-    /// Hand an event to the UI thread.
-    ///
-    /// The event is boxed and leaked into the message; the UI side reclaims it.
-    /// If posting fails the box is reclaimed here instead, so nothing leaks.
-    pub fn send(&self, event: ProviderEvent) {
-        let raw = self.target.load(Ordering::Relaxed);
-        if raw == 0 {
-            return;
-        }
-
-        let hwnd = HWND(raw as *mut std::ffi::c_void);
-        let boxed = Box::into_raw(Box::new(event));
-
-        let posted = unsafe {
-            PostMessageW(
-                Some(hwnd),
-                WM_APP_STATUS,
-                WPARAM(boxed as usize),
-                LPARAM(0),
-            )
-            .is_ok()
-        };
-
-        if !posted {
-            drop(unsafe { Box::from_raw(boxed) });
-        }
-    }
-}
-
-/// Reclaim an event posted by `ProviderSink::send`.
-///
-/// # Safety
-/// `wparam` must be the value from a `WM_APP_STATUS` message and must not have
-/// been taken already.
-pub unsafe fn take_event(wparam: usize) -> Option<ProviderEvent> {
-    if wparam == 0 {
-        return None;
-    }
-    Some(*Box::from_raw(wparam as *mut ProviderEvent))
 }
 
 /// Lets the UI thread poke a provider that is blocked reading the pipe.
@@ -230,8 +170,8 @@ impl ProviderControl {
 /// Every UI change until now needed a live voice channel to look at, which
 /// made iterating slow and meant some paths could only be reasoned about
 /// rather than seen. This emits a plausible call and keeps it moving.
-pub fn spawn_demo(sink: ProviderSink) -> std::thread::JoinHandle<()> {
-    use crate::model::{ConnectionState, Participant, VoiceStatus};
+pub fn spawn_demo(sink: EventSink) -> std::thread::JoinHandle<()> {
+    use crate::integration::discord::model::{ConnectionState, Participant, VoiceStatus};
 
     std::thread::Builder::new()
         .name("demo-provider".to_string())
@@ -287,7 +227,7 @@ pub fn spawn_demo(sink: ProviderSink) -> std::thread::JoinHandle<()> {
 /// Start the RPC provider on its own thread.
 pub fn spawn_rpc(
     creds: Credentials,
-    sink: ProviderSink,
+    sink: EventSink,
     control: ProviderControl,
 ) -> std::thread::JoinHandle<()> {
     std::thread::Builder::new()

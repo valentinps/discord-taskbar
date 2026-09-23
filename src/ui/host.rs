@@ -14,30 +14,34 @@ use windows::Win32::UI::HiDpi::{
 use windows::Win32::UI::WindowsAndMessaging::*;
 
 use crate::assets::icons::IconFonts;
-use crate::integration::discord::icons as glyphs;
-use crate::integration::discord::view;
-use crate::assets::images::ImageCache;
+use crate::assets::images::{ImageCache, ImageRef};
 use crate::config::Config;
-use crate::model::VoiceStatus;
-use crate::provider::{self, ProviderControl, ProviderEvent, ProviderSink};
 
-use super::menu;
 use super::block::{self, BlockId, Context};
-use super::render::{Canvas, Color, Font};
-use super::taskbar::{self, Anchor, Edge, TaskbarInfo, DEFAULT_DPI};
-use super::settings;
-use super::theme::{MiddleClick, Theme};
-use super::tray::{self, Tray};
+use super::integration::{
+    self, Event, EventSink, Gesture, Integration, Interaction, Meter, TrayItem, Ui,
+    TRAY_ID_BASE,
+};
+use super::menu;
 use super::popup;
+use super::render::{Canvas, Color, Font};
+use super::settings;
+use super::taskbar::{self, Anchor, Edge, TaskbarInfo, DEFAULT_DPI};
+use super::theme::Theme;
+use super::tray::{self, Tray};
 use super::widget;
 use super::{
     take_widget_input, Notifier, TIMER_ANCHOR, TIMER_ANCHOR_MS, WM_APP_ASSET_READY,
-    WM_APP_STATUS, WM_APP_TRAY,
+    WM_APP_INTEGRATION, WM_APP_TRAY,
     WM_APP_WIDGET_CLICK, WM_APP_WIDGET_CONTEXT, WM_APP_WIDGET_CURSOR, WM_APP_WIDGET_HOVER,
     WM_APP_WIDGET_LEAVE, WM_APP_WIDGET_MIDDLE, WM_APP_WIDGET_PAINT, WM_APP_WIDGET_WHEEL,
 };
 
 const CLASS_NAME: windows::core::PCWSTR = w!("DiscordTaskbarHost");
+
+/// The widget's own tray commands all sit below
+/// [`super::integration::TRAY_ID_BASE`]; anything above belongs to the
+/// integration.
 
 /// Keep this much clear of the taskbar edges and the clock.
 const EDGE_MARGIN: i32 = 8;
@@ -45,18 +49,17 @@ const EDGE_MARGIN: i32 = 8;
 /// How long a transient message (a refused command) stays on screen.
 const NOTICE_LINGER: std::time::Duration = std::time::Duration::from_secs(4);
 
-/// Minimum time the volume readout stays up when it was not opened by
-/// hovering — after a menu choice the pointer is nowhere near the avatar, so
-/// hiding the instant we check would make it flash and vanish.
-const VOLUME_OVERLAY_HOLD: std::time::Duration = std::time::Duration::from_millis(1200);
-
-/// The volume readout. It lives for as long as the pointer stays on the person
-/// it describes, rather than for a fixed time: tying it to the pointer is what
-/// makes it feel attached to what you are doing.
-struct VolumeOverlay {
-    user_id: String,
-    name: String,
-    volume: f32,
+/// The one-line readout. It lives for as long as the pointer stays on the
+/// block it describes, rather than for a fixed time: tying it to the pointer
+/// is what makes it feel attached to what you are doing.
+struct MeterState {
+    about: BlockId,
+    title: String,
+    value_text: String,
+    fraction: f32,
+    fill: Color,
+    image: Option<ImageRef>,
+    image_size: i32,
     /// Not dismissed before this instant, whatever the pointer is doing.
     hold_until: std::time::Instant,
 }
@@ -91,40 +94,79 @@ struct App {
     theme: Theme,
     taskbar_created: u32,
 
-    status: VoiceStatus,
+    /// What the widget is showing. Taken out of `self` while it runs, so it
+    /// can be handed the `Ui` that borrows the rest.
+    integration: Option<Box<dyn Integration>>,
     images: ImageCache,
     icon_fonts: IconFonts,
     /// Shown instead of the status when something needs the user's attention.
     notice: Option<String>,
     /// When set, `notice` clears itself at this time.
     notice_expires: Option<std::time::Instant>,
-    /// Shown while the wheel is adjusting somebody's volume. Lives in its own
-    /// window above the taskbar so the widget — and the avatar being scrolled
-    /// over — stays exactly where it is.
-    volume_overlay: Option<VolumeOverlay>,
+    /// Lives in its own window above the taskbar so the widget — and the
+    /// block it is about — stays exactly where it is.
+    meter: Option<MeterState>,
     popup: Option<HWND>,
     popup_canvas: Option<Canvas>,
     tray: Option<Tray>,
-    control: ProviderControl,
 }
 
 impl App {
-    fn new(host: HWND, theme: Theme, taskbar_created: u32, control: ProviderControl) -> Self {
+    fn new(
+        host: HWND,
+        theme: Theme,
+        taskbar_created: u32,
+        integration: Box<dyn Integration>,
+    ) -> Self {
+        let (glyph, colour) = integration.tray_icon();
+        let tooltip = integration.tooltip();
+        let tray = Tray::new(host, WM_APP_TRAY, glyph, colour);
+        if let Some(tray) = &tray {
+            tray.set_tooltip(&tooltip);
+        }
+
         App {
             surfaces: Vec::new(),
             fonts: HashMap::new(),
             theme,
             taskbar_created,
-            status: VoiceStatus::default(),
+            integration: Some(integration),
             images: ImageCache::new(Notifier::new(host, WM_APP_ASSET_READY)),
             icon_fonts: IconFonts::new(),
             notice: None,
             notice_expires: None,
-            volume_overlay: None,
+            meter: None,
             popup: None,
             popup_canvas: None,
-            tray: Tray::new(host, WM_APP_TRAY, glyphs::HEADPHONES, tray::BRAND),
-            control,
+            tray,
+        }
+    }
+
+    /// Run `action` with the integration and a `Ui` onto this app.
+    ///
+    /// The integration is a field of `App` and the `Ui` borrows `App`, so the
+    /// two cannot be held at once. Taking it out for the duration is what lets
+    /// an integration act on the widget while it is deciding what to do.
+    fn dispatch(
+        &mut self,
+        widget: Option<HWND>,
+        action: impl FnOnce(&mut dyn Integration, &mut dyn Ui),
+    ) {
+        let Some(mut integration) = self.integration.take() else {
+            return;
+        };
+        {
+            let mut ui = HostUi { app: self, widget };
+            action(integration.as_mut(), &mut ui);
+        }
+        self.integration = Some(integration);
+    }
+
+    /// What the integration wants drawn right now.
+    fn blocks(&self) -> Vec<block::Block> {
+        match &self.integration {
+            Some(integration) => integration.blocks(&self.theme),
+            None => Vec::new(),
         }
     }
 
@@ -151,7 +193,7 @@ impl App {
 
     /// Nothing to show: not in a call and nothing to report.
     fn is_idle(&self) -> bool {
-        self.notice.is_none() && !self.status.is_connected()
+        self.notice.is_none() && self.blocks().is_empty()
     }
 
     /// Reconcile the set of widgets against the taskbars the config asks for.
@@ -242,7 +284,7 @@ impl App {
     }
 
     fn hide_popup(&mut self) {
-        self.volume_overlay = None;
+        self.meter = None;
         if let Some(hwnd) = self.popup {
             popup::hide(hwnd);
         }
@@ -400,7 +442,7 @@ impl App {
             self.surfaces[index].layout = None;
             text_width + padding * 2
         } else {
-            let blocks = view::blocks(&self.status, &self.theme);
+            let blocks = self.blocks();
             let mut ctx = Context {
                 theme: &self.theme,
                 font: &font,
@@ -430,30 +472,20 @@ impl App {
         }
     }
 
-    /// Route a click in a widget to whichever element owns that pixel.
-    fn on_widget_click(&mut self, widget: HWND, point: POINT) {
-        let Some(id) = self.block_at(widget, point) else {
-            return;
-        };
-
-        match id.as_str() {
-            view::ID_MUTE => self.toggle_mute(),
-            view::ID_DEAFEN => self.toggle_deafen(),
-            view::ID_LEAVE => {
-                self.control.leave_voice();
-            }
-            // Only the server icon and the channel name jump to Discord;
-            // clicking a participant is for acting on that participant.
-            view::ID_FOCUS => {
-                tray::focus_discord();
-            }
-            _ => {
-                if let Some(user_id) = view::user_of(&id) {
-                    let user_id = user_id.to_string();
-                    self.show_user_menu(widget, &user_id);
-                }
-            }
-        }
+    /// Hand a gesture to the integration, with whatever block it landed on.
+    fn dispatch_gesture(&mut self, widget: HWND, gesture: Gesture, point: POINT) {
+        let target = self.block_at(widget, point);
+        let screen = client_to_screen(widget, point);
+        self.dispatch(Some(widget), |integration, ui| {
+            integration.on_interaction(
+                Interaction {
+                    gesture,
+                    target,
+                    screen,
+                },
+                ui,
+            );
+        });
     }
 
     /// Whether a point is worth showing a hand cursor over.
@@ -467,138 +499,21 @@ impl App {
         self.surfaces[index].layout.as_ref()?.hit(point)
     }
 
-    /// Which participant is under a point, for the wheel and middle button.
-    fn user_at(&mut self, widget: HWND, point: POINT) -> Option<String> {
-        let id = self.block_at(widget, point)?;
-        view::user_of(&id).map(|user| user.to_string())
+    /// Which block is under a screen position, for any of our widgets.
+    fn block_at_screen(&self, screen: POINT) -> Option<BlockId> {
+        let (widget, point) = surface_at(&self.surfaces, screen)?;
+        self.block_at(widget, point)
     }
 
-    /// Wheel over a participant adjusts how loud they are, locally.
-    fn on_wheel(&mut self, widget: HWND, notches: i32, point: POINT) {
-        let Some(user_id) = self.user_at(widget, point) else {
+    /// Dismiss the readout once the pointer is no longer on what it describes.
+    fn dismiss_meter_if_unhovered(&mut self, widget: Option<HWND>, point: Option<POINT>) {
+        let Some(meter) = &self.meter else {
             return;
         };
-        let Some(participant) = self
-            .status
-            .participants
-            .iter()
-            .find(|p| p.user_id == user_id)
-        else {
-            return;
-        };
-
-        // Your own volume is not a thing Discord lets you set.
-        if participant.is_self {
+        if std::time::Instant::now() < meter.hold_until {
             return;
         }
-
-        // A notch moves the number the user can see, which is Discord's
-        // perceptual percentage — not the amplitude underneath it. Stepping
-        // the amplitude instead would move the slider by wildly different
-        // amounts depending on where it already was.
-        let step = self.theme.scroll_volume_step as f32;
-        let shown = self.theme.shown_volume(participant.volume);
-        let ceiling = self.theme.volume_ceiling(shown);
-        let volume = (shown + notches as f32 * step).clamp(0.0, ceiling);
-        let amplitude = self.theme.stored_volume(volume);
-        let name = participant.display_name.clone();
-
-        if !self.control.set_user_voice(&user_id, Some(amplitude), None) {
-            return;
-        }
-
-        // Reflect it now; Discord's own event will confirm.
-        if let Some(participant) = self.status.participant_mut(&user_id) {
-            participant.volume = amplitude;
-        }
-
-        self.volume_overlay = Some(VolumeOverlay {
-            user_id: user_id.clone(),
-            name,
-            volume,
-            // Opened by the wheel, so the pointer is already on the avatar and
-            // moving off it should dismiss immediately.
-            hold_until: std::time::Instant::now(),
-        });
-
-        // Redraw the widgets too: dropping to zero dims the avatar. The layout
-        // is unchanged, so the pointer stays over the same person and the next
-        // notch lands where this one did.
-        self.refresh();
-        self.show_volume_popup(widget);
-    }
-
-    fn on_middle_click(&mut self, widget: HWND, point: POINT) {
-        let Some(user_id) = self.user_at(widget, point) else {
-            return;
-        };
-        match self.theme.middle_click {
-            MiddleClick::None => {}
-            MiddleClick::LocalMute => self.toggle_local_mute(&user_id),
-            MiddleClick::VolumeReset => self.set_user_volume(&user_id, 100.0, widget),
-        }
-    }
-
-    fn toggle_local_mute(&mut self, user_id: &str) {
-        let Some(participant) = self
-            .status
-            .participants
-            .iter()
-            .find(|p| p.user_id == user_id)
-        else {
-            return;
-        };
-        let muted = !participant.local_mute;
-
-        if self.control.set_user_voice(user_id, None, Some(muted)) {
-            if let Some(participant) = self.status.participant_mut(user_id) {
-                participant.local_mute = muted;
-            }
-            self.refresh();
-        }
-    }
-
-    /// `volume` is what the user sees: a perceptual percentage, as on
-    /// Discord's own slider.
-    fn set_user_volume(&mut self, user_id: &str, volume: f32, widget: HWND) {
-        let amplitude = self.theme.stored_volume(volume);
-        if !self.control.set_user_voice(user_id, Some(amplitude), None) {
-            return;
-        }
-        let name = self
-            .status
-            .participants
-            .iter()
-            .find(|p| p.user_id == user_id)
-            .map(|p| p.display_name.clone())
-            .unwrap_or_default();
-
-        if let Some(participant) = self.status.participant_mut(user_id) {
-            participant.volume = amplitude;
-        }
-        self.volume_overlay = Some(VolumeOverlay {
-            user_id: user_id.to_string(),
-            name,
-            volume,
-            hold_until: std::time::Instant::now() + VOLUME_OVERLAY_HOLD,
-        });
-        self.refresh();
-        self.show_volume_popup(widget);
-    }
-
-    /// Dismiss the volume readout unless the pointer is still on that person.
-    ///
-    /// `point` is the pointer in widget client coordinates when a message
-    /// supplied one; otherwise it is read from the system, which is what makes
-    /// this usable as a periodic check.
-    fn dismiss_volume_if_unhovered(&mut self, widget: Option<HWND>, point: Option<POINT>) {
-        let Some(overlay) = self.volume_overlay.as_ref() else {
-            return;
-        };
-        if std::time::Instant::now() < overlay.hold_until {
-            return;
-        }
-        let user_id = overlay.user_id.clone();
+        let about = meter.about.clone();
 
         let located = match (widget, point) {
             (Some(widget), Some(point)) => Some((widget, point)),
@@ -606,8 +521,8 @@ impl App {
         };
 
         let still_there = located
-            .and_then(|(widget, point)| self.user_at(widget, point))
-            .is_some_and(|hovered| hovered == user_id);
+            .and_then(|(widget, point)| self.block_at(widget, point))
+            .is_some_and(|hovered| hovered == about);
 
         if !still_there {
             self.hide_popup();
@@ -616,11 +531,20 @@ impl App {
 
     /// The widget under the pointer and the pointer within it, if any.
     fn cursor_over_surface(&self) -> Option<(HWND, POINT)> {
-        unsafe {
+        let screen = unsafe {
             let mut screen = POINT::default();
             GetCursorPos(&mut screen).ok()?;
+            screen
+        };
+        surface_at(&self.surfaces, screen)
+    }
+}
 
-            for surface in &self.surfaces {
+/// Which of `surfaces` is under a screen position, and where within it.
+fn surface_at(surfaces: &[Surface], screen: POINT) -> Option<(HWND, POINT)> {
+    unsafe {
+        {
+            for surface in surfaces {
                 let mut rect = RECT::default();
                 if GetWindowRect(surface.hwnd, &mut rect).is_err() {
                     continue;
@@ -638,25 +562,36 @@ impl App {
                 return Some((surface.hwnd, point));
             }
         }
-        None
+    }
+    None
+}
+
+impl App {
+
+    /// Draw and position the readout, centred on the display whose widget was
+    /// interacted with, just clear of that taskbar.
+    fn show_meter_popup(&mut self, widget: Option<HWND>) {
+        let index = widget
+            .and_then(|widget| self.surface_index(widget))
+            .or(if self.surfaces.is_empty() { None } else { Some(0) });
+        let Some(index) = index else { return };
+        self.draw_meter_popup(index);
     }
 
-    /// Draw and position the volume popup, centred on the display whose widget
-    /// was interacted with, just clear of that taskbar.
-    fn show_volume_popup(&mut self, widget: HWND) {
-        let Some(index) = self.surface_index(widget) else {
-            return;
-        };
-        self.draw_volume_popup(index);
-    }
-
-    fn draw_volume_popup(&mut self, index: usize) {
-        // Copy what the overlay says up front: drawing needs `&mut self` for
+    fn draw_meter_popup(&mut self, index: usize) {
+        // Copy what the readout says up front: drawing needs `&mut self` for
         // the font and image caches.
-        let Some((name, volume, user_id)) = self
-            .volume_overlay
-            .as_ref()
-            .map(|o| (o.name.clone(), o.volume, o.user_id.clone()))
+        let Some((title, value_text, fraction, fill, image, image_size)) =
+            self.meter.as_ref().map(|m| {
+                (
+                    m.title.clone(),
+                    m.value_text.clone(),
+                    m.fraction,
+                    m.fill,
+                    m.image.clone(),
+                    m.image_size,
+                )
+            })
         else {
             return;
         };
@@ -668,12 +603,6 @@ impl App {
         let Some(font) = self.font_for(dpi) else {
             return;
         };
-        let participant = self
-            .status
-            .participants
-            .iter()
-            .find(|p| p.user_id == user_id)
-            .cloned();
 
         if self.popup_canvas.is_none() {
             self.popup_canvas = Canvas::new(1, 1);
@@ -683,23 +612,13 @@ impl App {
             return;
         };
 
-        // The readout works in whatever the number means; deciding that it
-        // means a percentage, and that past 100 is a boost worth colouring,
-        // is Discord's business rather than the widget's.
-        let ceiling = self.theme.volume_ceiling(volume);
         let mut view = popup::Meter {
-            title: &name,
-            value_text: view::percent(volume),
-            fraction: volume / ceiling,
-            fill: if volume > 100.5 {
-                self.theme.danger
-            } else {
-                self.theme.speaking
-            },
-            image: participant
-                .as_ref()
-                .map(|p| p.avatar_ref(self.theme.avatar_size as u32)),
-            image_size: self.theme.avatar_size,
+            title: &title,
+            value_text,
+            fraction,
+            fill,
+            image,
+            image_size,
             theme: &self.theme,
             font: &font,
             images: &mut self.images,
@@ -735,286 +654,27 @@ impl App {
         }
     }
 
-    /// Mirror the Discord client's coupling: clicking the microphone while
-    /// deafened lifts both, because a muted-but-not-deafened state is what the
-    /// user is actually asking for.
-    fn toggle_mute(&mut self) {
-        let state = self.status.self_state;
-        let (mute, deaf) = if state.deaf {
-            (false, false)
-        } else {
-            (!state.mute, state.deaf)
-        };
-        self.apply_voice(mute, deaf);
-    }
-
-    fn toggle_deafen(&mut self) {
-        let state = self.status.self_state;
-        let deaf = !state.deaf;
-        // Deafening mutes; undeafening restores an unmuted mic, which is what
-        // the Discord client does.
-        self.apply_voice(deaf, deaf);
-    }
-
-    /// Send the change and reflect it immediately.
-    ///
-    /// Discord acknowledges in tens of milliseconds, but waiting for the
-    /// round trip before redrawing makes the button feel broken. The optimistic
-    /// state is replaced by whatever `VOICE_SETTINGS_UPDATE` reports, so if the
-    /// write is refused the widget snaps back rather than lying.
-    fn apply_voice(&mut self, mute: bool, deaf: bool) {
-        let sent = self.control.set_voice(Some(mute), Some(deaf));
-
-        if sent {
-            self.status.self_state.mute = mute;
-            self.status.self_state.deaf = deaf;
-            if let Some(me) = self.status.participants.iter_mut().find(|p| p.is_self) {
-                me.self_mute = mute;
-                me.self_deaf = deaf;
-            }
-        } else {
-            self.notice = Some("Not connected to Discord".to_string());
-            self.notice_expires = Some(std::time::Instant::now() + NOTICE_LINGER);
+    fn on_integration_event(&mut self, event: Event) {
+        let mut redraw = false;
+        self.dispatch(None, |integration, ui| {
+            redraw = integration.on_event(event, ui);
+        });
+        if redraw {
+            self.update_tooltip();
+            self.refresh();
         }
-        self.refresh();
-    }
-
-    /// Per-participant menu, drawn in the widget's own style.
-    ///
-    /// Only local actions appear. Server mute, server deafen and disconnecting
-    /// somebody else have no Discord RPC command — see the README.
-    ///
-    /// Loops rather than returning after one menu: dismissing by clicking
-    /// another participant should move the panel to them, and clicking the
-    /// same one again should just close it.
-    fn show_user_menu(&mut self, widget: HWND, user_id: &str) {
-        const ID_LOCAL_MUTE: usize = 1;
-        const ID_FOCUS: usize = 2;
-
-        // The panel supersedes the small readout; leaving both up would show
-        // the same number twice.
-        self.hide_popup();
-
-        let mut target = user_id.to_string();
-
-        loop {
-            let Some(participant) = self
-                .status
-                .participants
-                .iter()
-                .find(|p| p.user_id == target)
-                .cloned()
-            else {
-                return;
-            };
-            let Some(index) = self.surface_index(widget) else {
-                return;
-            };
-
-            let info = self.surfaces[index].taskbar.clone();
-            let dpi = info.dpi;
-            let Some(font) = self.font_for(dpi) else {
-                return;
-            };
-
-            // Everything the menu deals in is the perceptual percentage
-            // Discord's own slider shows, not the amplitude underneath it.
-            let shown = self.theme.shown_volume(participant.volume);
-
-            let items = vec![
-                menu::Item::Header {
-                    name: participant.display_name.clone(),
-                    image: Some(participant.avatar_ref(self.theme.avatar_size as u32)),
-                    image_size: self.theme.avatar_size,
-                },
-                menu::Item::Separator,
-                menu::Item::Action {
-                    id: ID_LOCAL_MUTE,
-                    label: if participant.local_mute {
-                        "Unmute for me".to_string()
-                    } else {
-                        "Mute for me".to_string()
-                    },
-                    icon: Some(if participant.local_mute {
-                        glyphs::VOLUME_MUTED
-                    } else {
-                        glyphs::VOLUME
-                    }),
-                    checked: participant.local_mute,
-                    danger: participant.local_mute,
-                },
-                menu::Item::Slider {
-                    label: "Volume".to_string(),
-                    value: shown,
-                    // Zero to whatever scale Discord's own slider is on.
-                    range: (0.0, self.theme.volume_ceiling(shown)),
-                    format: view::percent,
-                    // Past 100% is boosting, which is worth saying in colour.
-                    warn_above: Some(100.5),
-                },
-                menu::Item::SliderPreset {
-                    label: "Reset volume".to_string(),
-                    value: 100.0,
-                },
-                menu::Item::Separator,
-                menu::Item::Action {
-                    id: ID_FOCUS,
-                    label: "Focus Discord".to_string(),
-                    icon: None,
-                    checked: false,
-                    danger: false,
-                },
-            ];
-
-            // Anchored over the pointer, opening away from the taskbar.
-            let anchor = unsafe {
-                let mut rect = RECT::default();
-                let _ = GetWindowRect(widget, &mut rect);
-                let mut cursor = POINT::default();
-                let _ = GetCursorPos(&mut cursor);
-                POINT {
-                    x: cursor.x.clamp(rect.left, rect.right),
-                    y: if info.edge == Edge::Top {
-                        info.rect.bottom
-                    } else {
-                        info.rect.top
-                    },
-                }
-            };
-
-            // Volume is applied from inside the menu while the bar is dragged,
-            // so it is audible immediately and the menu stays open. The
-            // control is cheap to clone and borrows nothing else here.
-            let control = self.control.clone();
-            let applying_to = target.clone();
-            let curve = (self.theme.volume_curve, self.theme.volume_boost_db);
-            let apply = move |shown: f32| {
-                // The bar hands back a perceptual percentage; Discord wants
-                // the amplitude.
-                let amplitude = crate::volume::perceptual_to_amplitude(shown, curve.0, curve.1);
-                control.set_user_voice(&applying_to, Some(amplitude), None);
-            };
-
-            let outcome = {
-                let mut style = menu::Style {
-                    theme: &self.theme,
-                    font: &font,
-                    icon_fonts: &mut self.icon_fonts,
-                    images: &mut self.images,
-                    dpi,
-                    on_slide: Some(&apply),
-                };
-                menu::show(&items, &mut style, anchor, info.edge != Edge::Top, info.rect)
-            };
-            self.return_font(dpi, font);
-
-            // Reconcile our own copy with whatever the bar was left at;
-            // Discord's own event will confirm it shortly.
-            if let Some(shown) = outcome.slider {
-                if let Some(participant) = self.status.participant_mut(&target) {
-                    participant.volume = self.theme.stored_volume(shown);
-                }
-                self.refresh();
-            }
-
-            match outcome.choice {
-                Some(menu::Choice::Action(ID_LOCAL_MUTE)) => {
-                    self.toggle_local_mute(&target);
-                    return;
-                }
-                Some(menu::Choice::Action(ID_FOCUS)) => {
-                    tray::focus_discord();
-                    return;
-                }
-                Some(_) => return,
-                None => {}
-            }
-
-            // Dismissed by clicking outside. If that click was on a different
-            // participant, show theirs; on the same one, it was a toggle.
-            let Some(screen) = outcome.dismissed_at else {
-                return;
-            };
-            let Some(next) = self.user_at_screen(widget, screen) else {
-                return;
-            };
-            if next == target {
-                return;
-            }
-            target = next;
-        }
-    }
-
-    /// Which participant is under a screen position, for a widget.
-    fn user_at_screen(&mut self, widget: HWND, screen: POINT) -> Option<String> {
-        let mut point = screen;
-        unsafe {
-            let mut rect = RECT::default();
-            GetWindowRect(widget, &mut rect).ok()?;
-            if point.x < rect.left
-                || point.x >= rect.right
-                || point.y < rect.top
-                || point.y >= rect.bottom
-            {
-                return None;
-            }
-            let _ = ScreenToClient(widget, &mut point);
-        }
-        self.user_at(widget, point)
-    }
-
-    fn on_provider_event(&mut self, event: ProviderEvent) {
-        match event {
-            ProviderEvent::Status(status) => {
-                // A transient message outlives a status update; a real one does
-                // not, so only clear notices that are not on a timer.
-                if self.notice_expires.is_none() {
-                    self.notice = None;
-                }
-                self.status = (*status).clone();
-                self.update_tooltip();
-            }
-            ProviderEvent::AwaitingAuthorization => {
-                self.notice = Some("Authorize in Discord".to_string());
-            }
-            ProviderEvent::CommandFailed(message) => {
-                // Most likely another RPC client holds Discord's voice-settings
-                // lock. Show it briefly rather than appearing to ignore a click.
-                self.notice = Some(message);
-                self.notice_expires = Some(std::time::Instant::now() + NOTICE_LINGER);
-            }
-            ProviderEvent::Offline(reason) => {
-                // Discord simply not running is the normal idle case, not
-                // something worth putting on the taskbar.
-                self.notice_expires = None;
-                self.notice = if reason.contains("not running") {
-                    None
-                } else {
-                    Some(reason)
-                };
-            }
-        }
-        self.refresh();
     }
 
     fn update_tooltip(&self) {
-        let Some(tray) = &self.tray else { return };
-        let text = if self.status.is_connected() {
-            format!("Discord Taskbar — {}", self.status.location_label())
-        } else {
-            "Discord Taskbar — not in voice".to_string()
+        let (Some(tray), Some(integration)) = (&self.tray, &self.integration) else {
+            return;
         };
-        tray.set_tooltip(&text);
+        tray.set_tooltip(&integration.tooltip());
     }
 
     fn on_menu_command(&mut self, command: usize) {
         match command {
-            tray::CMD_FOCUS_DISCORD => {
-                tray::focus_discord();
-            }
-            tray::CMD_RECONNECT => self.control.reconnect(),
             tray::CMD_RESTART => tray::restart(),
-            tray::CMD_REAUTHORIZE => self.control.reauthorize(),
             tray::CMD_SETTINGS => self.open_settings(),
             tray::CMD_OPEN_CONFIG => tray::open_folder(&crate::config::config_dir()),
             // Out of process, so the checks see the machine as a fresh
@@ -1024,6 +684,11 @@ impl App {
                 PostQuitMessage(0);
             },
             tray::CMD_MONITOR_ALL => self.show_on_all_monitors(),
+            command if command >= TRAY_ID_BASE => {
+                self.dispatch(None, |integration, ui| {
+                    integration.on_tray_command(command, ui);
+                });
+            }
             command if command >= tray::CMD_MONITOR_BASE => {
                 self.toggle_monitor(command - tray::CMD_MONITOR_BASE)
             }
@@ -1031,25 +696,70 @@ impl App {
         }
     }
 
+    /// The notification-area menu: the integration's rows, then the widget's.
     fn show_context_menu(&mut self) {
-        let connected = self.status.is_connected();
+        let mut items: Vec<TrayItem> = match &self.integration {
+            Some(integration) => integration.tray_items(),
+            None => Vec::new(),
+        };
+        if !items.is_empty() {
+            items.push(TrayItem::Separator);
+        }
 
         // Offer every taskbar the system has, ticking the ones in use.
-        let monitors: Vec<(usize, String, bool, bool)> = taskbar::find_all()
-            .into_iter()
-            .map(|bar| {
-                let shown =
+        let bars = taskbar::find_all();
+        if !bars.is_empty() {
+            let shown: Vec<bool> = bars
+                .iter()
+                .map(|bar| {
                     self.theme
-                        .wants_monitor(bar.monitor_index, &bar.monitor, bar.is_primary);
-                (bar.monitor_index, bar.monitor, shown, bar.is_primary)
-            })
-            .collect();
+                        .wants_monitor(bar.monitor_index, &bar.monitor, bar.is_primary)
+                })
+                .collect();
 
-        let choice = self
-            .tray
-            .as_ref()
-            .and_then(|t| t.show_menu(connected, &monitors));
+            let mut displays = vec![
+                TrayItem::Command {
+                    id: tray::CMD_MONITOR_ALL,
+                    label: "All displays".to_string(),
+                    checked: shown.iter().all(|s| *s),
+                    enabled: true,
+                },
+                TrayItem::Separator,
+            ];
 
+            for (bar, shown) in bars.iter().zip(shown.iter()) {
+                displays.push(TrayItem::Command {
+                    id: tray::CMD_MONITOR_BASE + bar.monitor_index,
+                    // Device names like \.\DISPLAY1 mean nothing to most
+                    // people, so lead with the position.
+                    label: format!(
+                        "Display {}{}   {}",
+                        bar.monitor_index + 1,
+                        if bar.is_primary { " (primary)" } else { "" },
+                        bar.monitor.trim_start_matches(r"\.\")
+                    ),
+                    checked: *shown,
+                    enabled: true,
+                });
+            }
+
+            items.push(TrayItem::Submenu {
+                label: "Show on".to_string(),
+                items: displays,
+            });
+            items.push(TrayItem::Separator);
+        }
+
+        items.extend([
+            TrayItem::command(tray::CMD_SETTINGS, "Settings..."),
+            TrayItem::command(tray::CMD_OPEN_CONFIG, "Open config folder"),
+            TrayItem::command(tray::CMD_DOCTOR, "Diagnostics..."),
+            TrayItem::command(tray::CMD_RESTART, "Restart (reload config)"),
+            TrayItem::Separator,
+            TrayItem::command(tray::CMD_QUIT, "Quit"),
+        ]);
+
+        let choice = self.tray.as_ref().and_then(|t| t.show_menu(&items));
         if let Some(command) = choice {
             self.on_menu_command(command);
         }
@@ -1167,7 +877,7 @@ impl App {
         // Safety net for the readout. Hover and leave events normally dismiss
         // it, but a missed WM_MOUSELEAVE would otherwise strand it on screen,
         // so the real pointer position is checked once a second too.
-        self.dismiss_volume_if_unhovered(None, None);
+        self.dismiss_meter_if_unhovered(None, None);
 
         // Retire a transient message once it has had its moment.
         if let Some(expiry) = self.notice_expires {
@@ -1220,11 +930,17 @@ fn rects_equal(a: &RECT, b: &RECT) -> bool {
     a.left == b.left && a.top == b.top && a.right == b.right && a.bottom == b.bottom
 }
 
-/// Create the windows, start the provider, and pump messages.
+/// Create the windows, start the integration, and pump messages.
+///
+/// `setup_notice` is shown on the widget until something replaces it, for the
+/// case where the integration cannot do anything yet — no credentials, say —
+/// and `needs_setup` opens the settings window for the same reason.
 pub fn run(
     config: Config,
+    integration: Box<dyn Integration>,
     warning: Option<String>,
-    demo: bool,
+    setup_notice: Option<String>,
+    needs_setup: bool,
     open_settings: bool,
 ) -> Result<(), String> {
     unsafe {
@@ -1258,22 +974,15 @@ pub fn run(
 
         let taskbar_created = RegisterWindowMessageW(w!("TaskbarCreated"));
 
-        let control = if demo {
-            ProviderControl::demo()
-        } else {
-            ProviderControl::new()
-        };
-
         widget::set_host(host);
         APP.with(|cell| {
             let mut app = App::new(
                 host,
                 Theme::from(&config.appearance),
                 taskbar_created,
-                control.clone(),
+                integration,
             );
             app.rebuild_fonts();
-            app.update_tooltip();
             if let Some(warning) = warning {
                 // Shown until the user does something about it, since a bad
                 // config means the app is not doing what they asked.
@@ -1283,23 +992,22 @@ pub fn run(
             *cell.borrow_mut() = Some(app);
         });
 
-        if demo {
-            provider::spawn_demo(ProviderSink::new(host));
-        } else {
-            provider::spawn_rpc(config.discord.clone(), ProviderSink::new(host), control);
-        }
-
-        // Nothing works without a Discord application, so say so rather than
-        // sitting there doing nothing. The settings window explains how.
-        let needs_setup = !demo && !config.discord.is_complete();
-        if open_settings || needs_setup {
-            with_app(|app| {
-                if needs_setup {
-                    app.notice = Some("Set up Discord - see Settings".to_string());
-                    app.refresh();
-                }
-                app.open_settings();
+        // Only now: the integration posts to the host window, which has to
+        // exist and have an `App` behind it before the first event lands.
+        with_app(|app| {
+            app.dispatch(None, |integration, _| {
+                integration.start(EventSink::new(host));
             });
+        });
+
+        if let Some(message) = setup_notice {
+            with_app(|app| {
+                app.notice = Some(message);
+                app.refresh();
+            });
+        }
+        if open_settings || needs_setup {
+            with_app(|app| app.open_settings());
         }
 
         SetTimer(Some(host), TIMER_ANCHOR, TIMER_ANCHOR_MS, None);
@@ -1350,6 +1058,124 @@ unsafe fn register_host_class() -> Result<(), String> {
     Ok(())
 }
 
+/// The widget, as an integration is allowed to see it.
+///
+/// Holds the app for the length of one call, plus the widget the gesture came
+/// from so a menu or a readout lands on the right display.
+struct HostUi<'a> {
+    app: &'a mut App,
+    widget: Option<HWND>,
+}
+
+impl Ui for HostUi<'_> {
+    fn show_menu(
+        &mut self,
+        items: &[menu::Item],
+        on_slide: Option<&dyn Fn(f32)>,
+    ) -> menu::Outcome {
+        let index = self
+            .widget
+            .and_then(|widget| self.app.surface_index(widget))
+            .or(if self.app.surfaces.is_empty() {
+                None
+            } else {
+                Some(0)
+            });
+        let Some(index) = index else {
+            return menu::Outcome::default();
+        };
+
+        let info = self.app.surfaces[index].taskbar.clone();
+        let widget = self.app.surfaces[index].hwnd;
+        let dpi = info.dpi;
+        let Some(font) = self.app.font_for(dpi) else {
+            return menu::Outcome::default();
+        };
+
+        // Anchored over the pointer, opening away from the taskbar.
+        let anchor = unsafe {
+            let mut rect = RECT::default();
+            let _ = GetWindowRect(widget, &mut rect);
+            let mut cursor = POINT::default();
+            let _ = GetCursorPos(&mut cursor);
+            POINT {
+                x: cursor.x.clamp(rect.left, rect.right),
+                y: if info.edge == Edge::Top {
+                    info.rect.bottom
+                } else {
+                    info.rect.top
+                },
+            }
+        };
+
+        let outcome = {
+            let mut style = menu::Style {
+                theme: &self.app.theme,
+                font: &font,
+                icon_fonts: &mut self.app.icon_fonts,
+                images: &mut self.app.images,
+                dpi,
+                on_slide,
+            };
+            menu::show(items, &mut style, anchor, info.edge != Edge::Top, info.rect)
+        };
+        self.app.return_font(dpi, font);
+        outcome
+    }
+
+    fn show_meter(&mut self, meter: Meter) {
+        self.app.meter = Some(MeterState {
+            about: meter.about,
+            title: meter.title,
+            value_text: meter.value_text,
+            fraction: meter.fraction,
+            fill: meter.fill,
+            image: meter.image,
+            image_size: meter.image_size,
+            hold_until: std::time::Instant::now() + meter.hold,
+        });
+        self.app.show_meter_popup(self.widget);
+    }
+
+    fn hide_meter(&mut self) {
+        self.app.hide_popup();
+    }
+
+    fn notice(&mut self, text: String, linger: Option<std::time::Duration>) {
+        self.app.notice = Some(text);
+        self.app.notice_expires = linger.map(|d| std::time::Instant::now() + d);
+    }
+
+    fn clear_notice(&mut self) {
+        // A transient message outlives a status update; a real one does not,
+        // so only clear notices that are not on a timer.
+        if self.app.notice_expires.is_none() {
+            self.app.notice = None;
+        }
+    }
+
+    fn block_at(&mut self, screen: POINT) -> Option<BlockId> {
+        self.app.block_at_screen(screen)
+    }
+
+    fn redraw(&mut self) {
+        self.app.refresh();
+    }
+
+    fn theme(&self) -> &Theme {
+        &self.app.theme
+    }
+}
+
+/// A point in a widget's client area, in screen coordinates.
+fn client_to_screen(widget: HWND, point: POINT) -> POINT {
+    unsafe {
+        let mut screen = point;
+        let _ = windows::Win32::Graphics::Gdi::ClientToScreen(widget, &mut screen);
+        screen
+    }
+}
+
 fn with_app(action: impl FnOnce(&mut App)) {
     let _ = try_with_app(action);
 }
@@ -1389,9 +1215,9 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM)
         }
 
         match msg {
-            WM_APP_STATUS => {
-                if let Some(event) = provider::take_event(wparam.0) {
-                    with_app(|app| app.on_provider_event(event));
+            WM_APP_INTEGRATION => {
+                if let Some(event) = integration::take_event(wparam.0) {
+                    with_app(|app| app.on_integration_event(event));
                 }
                 LRESULT(0)
             }
@@ -1435,9 +1261,19 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM)
                 // The low word of lParam is the mouse event.
                 match (lparam.0 as u32) & 0xFFFF {
                     WM_RBUTTONUP | WM_CONTEXTMENU => with_app(|app| app.show_context_menu()),
-                    WM_LBUTTONDBLCLK => {
-                        tray::focus_discord();
-                    }
+                    WM_LBUTTONDBLCLK => with_app(|app| {
+                        // Whatever the integration offers first is its primary
+                        // action; double-click is a shortcut to it.
+                        let first = app.integration.as_ref().and_then(|i| {
+                            i.tray_items().into_iter().find_map(|item| match item {
+                                TrayItem::Command { id, enabled: true, .. } => Some(id),
+                                _ => None,
+                            })
+                        });
+                        if let Some(id) = first {
+                            app.on_menu_command(id);
+                        }
+                    }),
                     _ => {}
                 }
                 LRESULT(0)
@@ -1445,7 +1281,9 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM)
 
             WM_APP_WIDGET_CLICK => {
                 if let Some(input) = take_widget_input(wparam.0) {
-                    with_app(|app| app.on_widget_click(input.widget, input.point));
+                    with_app(|app| {
+                        app.dispatch_gesture(input.widget, Gesture::Click, input.point)
+                    });
                 }
                 LRESULT(0)
             }
@@ -1459,28 +1297,42 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM)
             WM_APP_WIDGET_HOVER => {
                 if let Some(input) = take_widget_input(wparam.0) {
                     with_app(|app| {
-                        app.dismiss_volume_if_unhovered(Some(input.widget), Some(input.point))
+                        app.dismiss_meter_if_unhovered(Some(input.widget), Some(input.point));
+                        app.dispatch_gesture(input.widget, Gesture::Hover, input.point);
                     });
                 }
                 LRESULT(0)
             }
 
             WM_APP_WIDGET_LEAVE => {
-                let _ = take_widget_input(wparam.0);
-                with_app(|app| app.hide_popup());
+                let input = take_widget_input(wparam.0);
+                with_app(|app| {
+                    app.hide_popup();
+                    if let Some(input) = input {
+                        app.dispatch_gesture(input.widget, Gesture::Leave, input.point);
+                    }
+                });
                 LRESULT(0)
             }
 
             WM_APP_WIDGET_MIDDLE => {
                 if let Some(input) = take_widget_input(wparam.0) {
-                    with_app(|app| app.on_middle_click(input.widget, input.point));
+                    with_app(|app| {
+                        app.dispatch_gesture(input.widget, Gesture::Middle, input.point)
+                    });
                 }
                 LRESULT(0)
             }
 
             WM_APP_WIDGET_WHEEL => {
                 if let Some(input) = take_widget_input(wparam.0) {
-                    with_app(|app| app.on_wheel(input.widget, input.notches, input.point));
+                    with_app(|app| {
+                        app.dispatch_gesture(
+                            input.widget,
+                            Gesture::Wheel(input.notches),
+                            input.point,
+                        )
+                    });
                 }
                 LRESULT(0)
             }

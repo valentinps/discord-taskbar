@@ -17,6 +17,7 @@ use windows::Win32::UI::Shell::{
 use windows::Win32::UI::WindowsAndMessaging::*;
 
 use crate::assets::icons::{Glyph, IconFonts};
+use crate::ui::integration::TrayItem;
 
 use super::render::{Canvas, Color};
 
@@ -96,111 +97,17 @@ impl Tray {
     /// `monitors` is the display list with a flag for whether the widget is
     /// currently shown there — editing that here saves the user having to
     /// look up device names to put in the config file.
-    pub fn show_menu(
-        &self,
-        connected: bool,
-        monitors: &[(usize, String, bool, bool)],
-    ) -> Option<usize> {
+    /// Show the notification-area menu and block until something is chosen.
+    ///
+    /// The rows are handed in rather than built here: the widget contributes
+    /// its own and the integration contributes the rest, and neither has to
+    /// know about the other's.
+    pub fn show_menu(&self, items: &[TrayItem]) -> Option<usize> {
         unsafe {
             let menu = CreatePopupMenu().ok()?;
-
-            let _ = AppendMenuW(
-                menu,
-                if connected {
-                    MF_STRING
-                } else {
-                    MF_STRING | MF_GRAYED
-                },
-                CMD_FOCUS_DISCORD,
-                windows::core::w!("Focus Discord"),
-            );
-            let _ = AppendMenuW(menu, MF_SEPARATOR, 0, PCWSTR::null());
-
-            // Which displays to show on.
-            if !monitors.is_empty() {
-                let displays = CreatePopupMenu().ok()?;
-                let all_shown = monitors.iter().all(|(_, _, shown, _)| *shown);
-                let _ = AppendMenuW(
-                    displays,
-                    if all_shown {
-                        MF_STRING | MF_CHECKED
-                    } else {
-                        MF_STRING
-                    },
-                    CMD_MONITOR_ALL,
-                    windows::core::w!("All displays"),
-                );
-                let _ = AppendMenuW(displays, MF_SEPARATOR, 0, PCWSTR::null());
-
-                for (index, device, shown, is_primary) in monitors {
-                    // Device names like \.\DISPLAY1 mean nothing to most
-                    // people, so lead with the position.
-                    let label = wide(&format!(
-                        "Display {}{}   {}",
-                        index + 1,
-                        if *is_primary { " (primary)" } else { "" },
-                        device.trim_start_matches(r"\.\")
-                    ));
-                    let _ = AppendMenuW(
-                        displays,
-                        if *shown {
-                            MF_STRING | MF_CHECKED
-                        } else {
-                            MF_STRING
-                        },
-                        CMD_MONITOR_BASE + index,
-                        PCWSTR(label.as_ptr()),
-                    );
-                }
-
-                let _ = AppendMenuW(
-                    menu,
-                    MF_POPUP,
-                    displays.0 as usize,
-                    windows::core::w!("Show on"),
-                );
-                let _ = AppendMenuW(menu, MF_SEPARATOR, 0, PCWSTR::null());
-            }
-
-            let _ = AppendMenuW(
-                menu,
-                MF_STRING,
-                CMD_RECONNECT,
-                windows::core::w!("Reconnect"),
-            );
-            let _ = AppendMenuW(
-                menu,
-                MF_STRING,
-                CMD_REAUTHORIZE,
-                windows::core::w!("Re-authorize with Discord"),
-            );
-            let _ = AppendMenuW(
-                menu,
-                MF_STRING,
-                CMD_SETTINGS,
-                windows::core::w!("Settings..."),
-            );
-            let _ = AppendMenuW(
-                menu,
-                MF_STRING,
-                CMD_OPEN_CONFIG,
-                windows::core::w!("Open config folder"),
-            );
-            let _ = AppendMenuW(
-                menu,
-                MF_STRING,
-                CMD_DOCTOR,
-                windows::core::w!("Diagnostics..."),
-            );
-            let _ = AppendMenuW(
-                menu,
-                MF_STRING,
-                CMD_RESTART,
-                windows::core::w!("Restart (reload config)"),
-            );
-            let _ = AppendMenuW(menu, MF_SEPARATOR, 0, PCWSTR::null());
-            let _ = AppendMenuW(menu, MF_STRING, CMD_QUIT, windows::core::w!("Quit"));
-
+            // Submenus are owned by the parent once appended, so destroying
+            // the root destroys them all.
+            append(menu, items);
             let choice = track(menu, self.hwnd);
             let _ = DestroyMenu(menu);
             choice
@@ -230,6 +137,41 @@ fn write_tip(buffer: &mut [u16; 128], text: &str) {
 }
 
 /// Draw a headphone glyph into a 32-bit bitmap and wrap it as an `HICON`.
+/// Append rows to an already-created menu, recursing into submenus.
+fn append(menu: HMENU, items: &[TrayItem]) {
+    unsafe {
+        for item in items {
+            match item {
+                TrayItem::Separator => {
+                    let _ = AppendMenuW(menu, MF_SEPARATOR, 0, PCWSTR::null());
+                }
+                TrayItem::Command {
+                    id,
+                    label,
+                    checked,
+                    enabled,
+                } => {
+                    let mut flags = MF_STRING;
+                    if *checked {
+                        flags |= MF_CHECKED;
+                    }
+                    if !*enabled {
+                        flags |= MF_GRAYED;
+                    }
+                    let text = wide(label);
+                    let _ = AppendMenuW(menu, flags, *id, PCWSTR(text.as_ptr()));
+                }
+                TrayItem::Submenu { label, items } => {
+                    let Ok(sub) = CreatePopupMenu() else { continue };
+                    append(sub, items);
+                    let text = wide(label);
+                    let _ = AppendMenuW(menu, MF_POPUP, sub.0 as usize, PCWSTR(text.as_ptr()));
+                }
+            }
+        }
+    }
+}
+
 fn build_icon(glyph: Glyph, colour: Color) -> Option<HICON> {
     let size = unsafe { GetSystemMetrics(SM_CXSMICON) }.max(16);
 

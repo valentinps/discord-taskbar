@@ -10,7 +10,7 @@ use windows::Win32::System::Threading::GetCurrentProcess;
 
 use discord_taskbar::assets::icons::IconFonts;
 use discord_taskbar::assets::images::ImageCache;
-use discord_taskbar::model::{Participant, VoiceStatus};
+use discord_taskbar::integration::discord::model::{Participant, VoiceStatus};
 use discord_taskbar::integration::discord::view;
 use discord_taskbar::ui::block::{self, Context};
 use discord_taskbar::ui::render::{Canvas, Color, Font};

@@ -12,6 +12,7 @@ use windows::Win32::System::Threading::{
 };
 
 use discord_taskbar::config::Config;
+use discord_taskbar::integration::discord::Discord;
 use discord_taskbar::ui;
 
 /// Give up rather than hang forever if the old process will not exit.
@@ -51,7 +52,24 @@ fn main() {
         eprintln!("discord-taskbar: {warning}");
     }
 
-    if let Err(error) = ui::host::run(config, warning, demo, settings) {
+    // Choosing what the widget shows is the whole of this binary's job.
+    // Everything below `ui::` would serve any other integration unchanged.
+    let integration = Box::new(Discord::new(config.discord.clone(), demo));
+
+    // Nothing works without a Discord application, so say so rather than
+    // sitting there doing nothing. The settings window explains how.
+    let needs_setup = !demo && !config.discord.is_complete();
+    let setup_notice =
+        needs_setup.then(|| "Set up Discord - see Settings".to_string());
+
+    if let Err(error) = ui::host::run(
+        config,
+        integration,
+        warning,
+        setup_notice,
+        needs_setup,
+        settings,
+    ) {
         eprintln!("discord-taskbar: {error}");
         std::process::exit(1);
     }

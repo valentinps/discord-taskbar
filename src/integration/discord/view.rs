@@ -9,7 +9,7 @@
 //! a matter of pushing another block onto this list.
 
 use crate::assets::images::OVERSAMPLE;
-use crate::model::VoiceStatus;
+use crate::integration::discord::model::VoiceStatus;
 use crate::ui::block::{Block, BlockId, Content, Ring, Shape, Span};
 use crate::ui::theme::Theme;
 

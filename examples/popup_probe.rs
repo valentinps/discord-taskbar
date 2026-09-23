@@ -8,7 +8,7 @@
 use windows::Win32::Foundation::HWND;
 
 use discord_taskbar::assets::images::ImageCache;
-use discord_taskbar::model::Participant;
+use discord_taskbar::integration::discord::model::Participant;
 use discord_taskbar::integration::discord::view;
 use discord_taskbar::ui::popup::{self, Meter};
 use discord_taskbar::ui::render::{Canvas, Font};

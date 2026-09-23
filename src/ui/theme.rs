@@ -64,7 +64,7 @@ pub struct Appearance {
     pub middle_click: String,
     /// Volume change per notch of the scroll wheel, over a participant.
     pub scroll_volume_step: i32,
-    /// Shape of Discord's volume curve; see `crate::volume`.
+    /// Shape of Discord's volume curve; see `crate::integration::discord::volume`.
     ///
     /// Measured against a live client rather than documented, so it is a
     /// setting: if Discord retunes the curve this is a number to change
@@ -125,8 +125,8 @@ impl Default for Appearance {
             show_leave_button: true,
             middle_click: "local_mute".to_string(),
             scroll_volume_step: 10,
-            volume_curve: crate::volume::DEFAULT_CURVE,
-            volume_boost_db: crate::volume::DEFAULT_BOOST_DB,
+            volume_curve: crate::integration::discord::volume::DEFAULT_CURVE,
+            volume_boost_db: crate::integration::discord::volume::DEFAULT_BOOST_DB,
             max_volume: 200,
             monitors: vec!["primary".to_string()],
             x_offset: 0,
@@ -180,12 +180,12 @@ impl Theme {
     ///
     /// RPC deals in amplitude; every number the user sees should be this.
     pub fn shown_volume(&self, amplitude: f32) -> f32 {
-        crate::volume::amplitude_to_perceptual(amplitude, self.volume_curve, self.volume_boost_db)
+        crate::integration::discord::volume::amplitude_to_perceptual(amplitude, self.volume_curve, self.volume_boost_db)
     }
 
     /// The amplitude to store for a number the user chose.
     pub fn stored_volume(&self, perceptual: f32) -> f32 {
-        crate::volume::perceptual_to_amplitude(perceptual, self.volume_curve, self.volume_boost_db)
+        crate::integration::discord::volume::perceptual_to_amplitude(perceptual, self.volume_curve, self.volume_boost_db)
     }
 
     /// The top of the volume scale to draw and map against.

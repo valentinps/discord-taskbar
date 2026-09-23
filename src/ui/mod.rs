@@ -13,6 +13,7 @@ pub mod block;
 pub mod controls;
 pub mod doctor;
 pub mod host;
+pub mod integration;
 pub mod menu;
 pub mod popup;
 pub mod render;
@@ -28,8 +29,8 @@ use std::sync::Arc;
 use windows::Win32::Foundation::{HWND, LPARAM, WPARAM};
 use windows::Win32::UI::WindowsAndMessaging::{PostMessageW, WM_APP};
 
-/// A new status snapshot is ready (`wparam` carries a boxed snapshot).
-pub const WM_APP_STATUS: u32 = WM_APP + 1;
+/// An integration has something to say (`wparam` carries a boxed event).
+pub const WM_APP_INTEGRATION: u32 = WM_APP + 1;
 /// The widget was left-clicked.
 pub const WM_APP_WIDGET_CLICK: u32 = WM_APP + 2;
 /// The widget was right-clicked; `lparam` packs the screen coordinates.

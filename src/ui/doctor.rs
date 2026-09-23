@@ -19,8 +19,8 @@ use windows::Win32::UI::HiDpi::GetDpiForWindow;
 use windows::Win32::UI::WindowsAndMessaging::*;
 
 use crate::config::{cache_dir, config_dir, config_path, Config, Credentials};
-use crate::provider::rpc::oauth;
-use crate::provider::rpc::{RpcClient, RpcError};
+use crate::integration::discord::provider::rpc::oauth;
+use crate::integration::discord::provider::rpc::{RpcClient, RpcError};
 use crate::ui::controls::{button, child, wide, Place};
 use crate::ui::taskbar;
 

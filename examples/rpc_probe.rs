@@ -12,7 +12,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use serde_json::Value;
 
 use discord_taskbar::config::Config;
-use discord_taskbar::provider::rpc::{events, oauth, Event, RpcClient, RpcError};
+use discord_taskbar::integration::discord::provider::rpc::{events, oauth, Event, RpcClient, RpcError};
 
 fn main() {
     match run() {

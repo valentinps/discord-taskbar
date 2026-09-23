@@ -18,7 +18,7 @@ use std::time::Instant;
 use serde_json::json;
 
 use discord_taskbar::config::Config;
-use discord_taskbar::provider::rpc::pipe::{self, IpcConnection, OP_FRAME, OP_HANDSHAKE};
+use discord_taskbar::integration::discord::provider::rpc::pipe::{self, IpcConnection, OP_FRAME, OP_HANDSHAKE};
 
 fn main() {
     let (config, _) = Config::load_or_create();
