@@ -7,7 +7,8 @@
 
 use windows::Win32::Foundation::{POINT, RECT};
 
-use crate::assets::icons::{self, Icon, IconFonts};
+use crate::assets::icons::{self, IconFonts};
+use crate::integration::discord::icons as glyphs;
 use crate::assets::images::ImageCache;
 use crate::model::VoiceStatus;
 
@@ -339,7 +340,11 @@ impl Element for AvatarRow {
                     badge_x,
                     badge_y,
                     badge_radius,
-                    participant.is_deafened(),
+                    if participant.is_deafened() {
+                        glyphs::HEADPHONES
+                    } else {
+                        glyphs::MICROPHONE
+                    },
                     theme_danger,
                     backdrop,
                 );
@@ -441,7 +446,7 @@ impl Element for LeaveButton {
         let colour = ctx.theme.danger;
         let backdrop = ctx.theme.background;
         ctx.icon_fonts
-            .draw(canvas, Icon::HangUp, bounds.left, y, size, colour, backdrop);
+            .draw(canvas, glyphs::HANG_UP, bounds.left, y, size, colour, backdrop);
     }
 
     fn hit_test(&self, ctx: &Context, bounds: RECT, point: POINT) -> Option<Action> {
@@ -496,14 +501,14 @@ impl Element for SelfStatusIcons {
         };
 
         let mic = if muted {
-            Icon::MicrophoneOff
+            glyphs::MICROPHONE_OFF
         } else {
-            Icon::Microphone
+            glyphs::MICROPHONE
         };
         let ear = if state.deaf {
-            Icon::HeadphonesOff
+            glyphs::HEADPHONES_OFF
         } else {
-            Icon::Headphones
+            glyphs::HEADPHONES
         };
 
         ctx.icon_fonts

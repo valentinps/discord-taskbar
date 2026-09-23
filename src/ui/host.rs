@@ -13,7 +13,8 @@ use windows::Win32::UI::HiDpi::{
 };
 use windows::Win32::UI::WindowsAndMessaging::*;
 
-use crate::assets::icons::{Icon, IconFonts};
+use crate::assets::icons::IconFonts;
+use crate::integration::discord::icons as glyphs;
 use crate::assets::images::ImageCache;
 use crate::config::Config;
 use crate::model::VoiceStatus;
@@ -134,7 +135,7 @@ impl App {
             volume_overlay: None,
             popup: None,
             popup_canvas: None,
-            tray: Tray::new(host, WM_APP_TRAY),
+            tray: Tray::new(host, WM_APP_TRAY, glyphs::HEADPHONES, tray::BRAND),
             control,
         }
     }
@@ -855,9 +856,9 @@ impl App {
                         "Mute for me".to_string()
                     },
                     icon: Some(if participant.local_mute {
-                        Icon::VolumeMuted
+                        glyphs::VOLUME_MUTED
                     } else {
-                        Icon::Volume
+                        glyphs::VOLUME
                     }),
                     checked: participant.local_mute,
                     danger: participant.local_mute,

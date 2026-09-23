@@ -19,7 +19,7 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{
 };
 use windows::Win32::UI::WindowsAndMessaging::*;
 
-use crate::assets::icons::{Icon, IconFonts};
+use crate::assets::icons::{Glyph, IconFonts};
 use crate::assets::images::ImageCache;
 use crate::model::Participant;
 
@@ -39,7 +39,7 @@ pub enum Item {
     Action {
         id: usize,
         label: String,
-        icon: Option<Icon>,
+        icon: Option<Glyph>,
         checked: bool,
         danger: bool,
     },

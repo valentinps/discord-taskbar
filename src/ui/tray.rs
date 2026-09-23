@@ -16,7 +16,7 @@ use windows::Win32::UI::Shell::{
 };
 use windows::Win32::UI::WindowsAndMessaging::*;
 
-use crate::assets::icons::{Icon, IconFonts};
+use crate::assets::icons::{Glyph, IconFonts};
 
 use super::render::{Canvas, Color};
 
@@ -38,7 +38,10 @@ pub const CMD_MONITOR_BASE: usize = 300;
 pub const CMD_MONITOR_ALL: usize = 299;
 
 /// Discord blurple, so the tray icon is recognisable at a glance.
-const BRAND: Color = Color::rgb(0x58, 0x65, 0xF2);
+///
+/// Moves to the integration once it supplies its own branding; for now it is
+/// the default handed to `Tray::new`.
+pub const BRAND: Color = Color::rgb(0x58, 0x65, 0xF2);
 
 pub struct Tray {
     hwnd: HWND,
@@ -46,8 +49,10 @@ pub struct Tray {
 }
 
 impl Tray {
-    pub fn new(hwnd: HWND, callback_message: u32) -> Option<Self> {
-        let icon = build_icon()?;
+    /// `glyph` and `colour` are the picture in the notification area, so the
+    /// integration decides what the widget looks like there.
+    pub fn new(hwnd: HWND, callback_message: u32, glyph: Glyph, colour: Color) -> Option<Self> {
+        let icon = build_icon(glyph, colour)?;
 
         let mut data = NOTIFYICONDATAW {
             cbSize: std::mem::size_of::<NOTIFYICONDATAW>() as u32,
@@ -225,7 +230,7 @@ fn write_tip(buffer: &mut [u16; 128], text: &str) {
 }
 
 /// Draw a headphone glyph into a 32-bit bitmap and wrap it as an `HICON`.
-fn build_icon() -> Option<HICON> {
+fn build_icon(glyph: Glyph, colour: Color) -> Option<HICON> {
     let size = unsafe { GetSystemMetrics(SM_CXSMICON) }.max(16);
 
     let mut canvas = Canvas::new(size, size)?;
@@ -234,11 +239,11 @@ fn build_icon() -> Option<HICON> {
     let mut fonts = IconFonts::new();
     fonts.draw(
         &mut canvas,
-        Icon::Headphones,
+        glyph,
         0,
         0,
         size,
-        BRAND,
+        colour,
         Color::TRANSPARENT,
     );
 

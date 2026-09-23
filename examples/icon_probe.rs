@@ -5,7 +5,8 @@
 
 use windows::Win32::Foundation::RECT;
 
-use discord_taskbar::assets::icons::{self, Icon, IconFonts};
+use discord_taskbar::assets::icons::{self, IconFonts};
+use discord_taskbar::integration::discord::icons as glyphs;
 use discord_taskbar::ui::render::{Canvas, Color};
 
 const SIZES: &[i32] = &[9, 11, 14, 16, 20, 32];
@@ -39,17 +40,17 @@ fn main() {
         let x = pad + column as i32 * cell;
         let centre = |row: i32| pad + row * cell + (cell - size) / 2 - pad / 2;
 
-        fonts.draw(&mut canvas, Icon::Microphone, x, centre(0), size, FOREGROUND, BACKGROUND);
-        fonts.draw(&mut canvas, Icon::MicrophoneOff, x, centre(1), size, DANGER, BACKGROUND);
-        fonts.draw(&mut canvas, Icon::Headphones, x, centre(2), size, FOREGROUND, BACKGROUND);
-        fonts.draw(&mut canvas, Icon::HeadphonesOff, x, centre(3), size, DANGER, BACKGROUND);
+        fonts.draw(&mut canvas, glyphs::MICROPHONE, x, centre(0), size, FOREGROUND, BACKGROUND);
+        fonts.draw(&mut canvas, glyphs::MICROPHONE_OFF, x, centre(1), size, DANGER, BACKGROUND);
+        fonts.draw(&mut canvas, glyphs::HEADPHONES, x, centre(2), size, FOREGROUND, BACKGROUND);
+        fonts.draw(&mut canvas, glyphs::HEADPHONES_OFF, x, centre(3), size, DANGER, BACKGROUND);
 
         // Badges, as drawn over an avatar corner.
-        for (row, deafened) in [(4, false), (5, true)] {
+        for (row, glyph) in [(4, glyphs::MICROPHONE), (5, glyphs::HEADPHONES)] {
             let radius = size as f32 / 2.0;
             let cx = x as f32 + radius;
             let cy = centre(row) as f32 + radius;
-            icons::badge(&mut canvas, &mut fonts, cx, cy, radius, deafened, DANGER, BACKGROUND);
+            icons::badge(&mut canvas, &mut fonts, cx, cy, radius, glyph, DANGER, BACKGROUND);
         }
     }
 

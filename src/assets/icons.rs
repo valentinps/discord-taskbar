@@ -1,49 +1,80 @@
-//! Microphone and headphone glyphs, taken from Windows' own icon font.
+//! Drawing glyphs from Windows' own icon fonts.
 //!
-//! These were hand-drawn vectors to begin with, and they looked it: at the
+//! Icons were hand-drawn vectors to begin with, and they looked it: at the
 //! 9–20 px they are actually used, hand-rolled geometry turns to mush.
 //! Segoe Fluent Icons ships with Windows 11 and carries properly hinted
-//! versions of exactly the glyphs needed, so the font does the work.
+//! versions of the glyphs an integration is likely to want, so the font does
+//! the work.
 //!
-//! Windows 10 has the older Segoe MDL2 Assets, which has the microphone and
-//! headphones but not the slashed microphone; `IconFonts` falls back to that
-//! and draws the slash by hand when it has to.
+//! Windows 10 has the older Segoe MDL2 Assets, which is missing some of the
+//! newer code points — the slashed microphone among them. A `Glyph` may name a
+//! `fallback` for that case, which is drawn with a hand-made strike instead.
+//!
+//! Nothing here knows what any particular glyph *means*. Integrations own
+//! their own code points; this module only resolves and draws them.
 
 use std::collections::HashMap;
 
 use crate::ui::render::{Canvas, Color, Font};
 
-/// Segoe Fluent Icons / Segoe MDL2 Assets code points.
-const GLYPH_MICROPHONE: char = '\u{E720}';
-const GLYPH_MICROPHONE_OFF: char = '\u{F781}';
-const GLYPH_HEADPHONES: char = '\u{E7F6}';
-/// A phone being hung up - Discord's own metaphor for leaving a call.
-const GLYPH_HANG_UP: char = '\u{E778}';
-const GLYPH_VOLUME: char = '\u{E767}';
-const GLYPH_VOLUME_MUTED: char = '\u{E74F}';
-
 const FLUENT: &str = "Segoe Fluent Icons";
 const MDL2: &str = "Segoe MDL2 Assets";
 
+/// One icon, as a code point plus what to do when the font lacks it.
+///
+/// Deliberately a plain value rather than an enum of known icons: the widget
+/// draws whatever an integration asks for, and a fixed enum would mean editing
+/// the core every time an integration wanted a new picture.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Icon {
-    Microphone,
-    MicrophoneOff,
-    Headphones,
-    HeadphonesOff,
-    HangUp,
-    Volume,
-    VolumeMuted,
+pub struct Glyph {
+    /// Preferred code point, in Segoe Fluent Icons.
+    pub code: char,
+    /// Drawn instead, with a diagonal strike added by hand, when only the
+    /// older Segoe MDL2 Assets is available. `None` means `code` is present in
+    /// both families.
+    pub fallback: Option<char>,
+    /// Strike the glyph whichever code point is used — for "off" states that
+    /// neither font family has a variant of.
+    pub strike: bool,
+}
+
+impl Glyph {
+    /// A glyph both font families carry.
+    pub const fn new(code: char) -> Self {
+        Glyph {
+            code,
+            fallback: None,
+            strike: false,
+        }
+    }
+
+    /// A glyph only Segoe Fluent Icons carries; elsewhere `fallback` is drawn
+    /// with a strike through it.
+    pub const fn with_fallback(code: char, fallback: char) -> Self {
+        Glyph {
+            code,
+            fallback: Some(fallback),
+            strike: false,
+        }
+    }
+
+    /// This glyph, struck through.
+    pub const fn struck(self) -> Self {
+        Glyph {
+            strike: true,
+            ..self
+        }
+    }
 }
 
 /// Icon fonts, cached per pixel size.
 ///
-/// Sizes vary (self icons, avatar badges, different DPI), and creating a GDI
+/// Sizes vary (widget icons, avatar badges, different DPI), and creating a GDI
 /// font on every repaint would be wasteful, so they are made once and kept.
 pub struct IconFonts {
     family: &'static str,
-    /// True when the family has the slashed-microphone glyph.
-    has_slashed: bool,
+    /// True when the richer Segoe Fluent Icons set is present.
+    fluent: bool,
     cache: HashMap<i32, Option<Font>>,
 }
 
@@ -58,13 +89,18 @@ impl IconFonts {
         let fluent = Font::family_exists(FLUENT);
         IconFonts {
             family: if fluent { FLUENT } else { MDL2 },
-            has_slashed: fluent,
+            fluent,
             cache: HashMap::new(),
         }
     }
 
     pub fn family(&self) -> &'static str {
         self.family
+    }
+
+    /// Whether the richer Segoe Fluent Icons set is available.
+    pub fn has_fluent(&self) -> bool {
+        self.fluent
     }
 
     fn font(&mut self, size: i32) -> Option<&Font> {
@@ -79,56 +115,42 @@ impl IconFonts {
         self.cache.clear();
     }
 
-    /// Width the icon will occupy at `size`.
-    pub fn measure(&mut self, canvas: &Canvas, icon: Icon, size: i32) -> i32 {
-        let Some((glyph, _)) = self.resolve(icon) else {
-            return size;
-        };
+    /// Width the glyph will occupy at `size`.
+    pub fn measure(&mut self, canvas: &Canvas, glyph: Glyph, size: i32) -> i32 {
+        let (code, _) = self.resolve(glyph);
         match self.font(size) {
-            Some(font) => canvas.measure_text(&glyph.to_string(), font).0,
+            Some(font) => canvas.measure_text(&code.to_string(), font).0,
             None => size,
         }
     }
 
-    /// Which code point to draw, and whether a slash has to be added by hand.
-    fn resolve(&self, icon: Icon) -> Option<(char, bool)> {
-        Some(match icon {
-            Icon::Microphone => (GLYPH_MICROPHONE, false),
-            Icon::MicrophoneOff => {
-                if self.has_slashed {
-                    (GLYPH_MICROPHONE_OFF, false)
-                } else {
-                    (GLYPH_MICROPHONE, true)
-                }
-            }
-            Icon::Headphones => (GLYPH_HEADPHONES, false),
-            // No headphones-off glyph exists in either family.
-            Icon::HeadphonesOff => (GLYPH_HEADPHONES, true),
-            Icon::HangUp => (GLYPH_HANG_UP, false),
-            Icon::Volume => (GLYPH_VOLUME, false),
-            Icon::VolumeMuted => (GLYPH_VOLUME_MUTED, false),
-        })
+    /// Which code point to draw, and whether a strike has to be added by hand.
+    fn resolve(&self, glyph: Glyph) -> (char, bool) {
+        match glyph.fallback {
+            // The preferred code point is missing from this family, so draw
+            // the older one and mark it struck by hand.
+            Some(fallback) if !self.fluent => (fallback, true),
+            _ => (glyph.code, glyph.strike),
+        }
     }
 
-    /// Draw `icon` centred in a `size`-wide box at `(x, y)`.
+    /// Draw `glyph` centred in a `size`-wide box at `(x, y)`.
     ///
-    /// `backdrop` is only used to cut the gap around a hand-drawn slash.
+    /// `backdrop` is only used to cut the gap around a hand-drawn strike.
     #[allow(clippy::too_many_arguments)]
     pub fn draw(
         &mut self,
         canvas: &mut Canvas,
-        icon: Icon,
+        glyph: Glyph,
         x: i32,
         y: i32,
         size: i32,
         color: Color,
         backdrop: Color,
     ) {
-        let Some((glyph, needs_slash)) = self.resolve(icon) else {
-            return;
-        };
+        let (code, needs_strike) = self.resolve(glyph);
 
-        let text = glyph.to_string();
+        let text = code.to_string();
         let (width, height) = match self.font(size) {
             Some(font) => canvas.measure_text(&text, font),
             None => return,
@@ -141,7 +163,7 @@ impl IconFonts {
             canvas.draw_text(&text, font, draw_x, draw_y, color);
         }
 
-        if needs_slash {
+        if needs_strike {
             draw_slash(canvas, x as f32, y as f32, size as f32, color, backdrop);
         }
     }
@@ -169,12 +191,13 @@ fn draw_slash(canvas: &mut Canvas, x: f32, y: f32, size: f32, color: Color, back
     canvas.stroke_line(x0, y0, x1, y1, line, color);
 }
 
-/// Mute / deafen marker drawn over the corner of an avatar.
+/// A small marker drawn over the corner of an image — a mute badge on an
+/// avatar, a playing marker on album art.
 ///
-/// No slash inside the badge: at nine pixels across, a mic-slash and a
-/// headphone-slash are the same smear. The red disc already means "off", so the
-/// glyph only has to answer *which* — microphone or headphones — and it gets
-/// the whole badge to do that in.
+/// The glyph is drawn plain, without any strike: at nine pixels across a
+/// slashed glyph and its unslashed twin are the same smear. The coloured disc
+/// is what carries the meaning; the glyph only has to say *which* thing, and it
+/// gets the whole badge to do that in.
 #[allow(clippy::too_many_arguments)]
 pub fn badge(
     canvas: &mut Canvas,
@@ -182,7 +205,7 @@ pub fn badge(
     centre_x: f32,
     centre_y: f32,
     radius: f32,
-    deafened: bool,
+    glyph: Glyph,
     fill: Color,
     ring: Color,
 ) {
@@ -193,10 +216,10 @@ pub fn badge(
     let gx = (centre_x - glyph_size as f32 / 2.0).round() as i32;
     let gy = (centre_y - glyph_size as f32 / 2.0).round() as i32;
 
-    let icon = if deafened {
-        Icon::Headphones
-    } else {
-        Icon::Microphone
+    // Never struck, whatever the caller's glyph says.
+    let plain = Glyph {
+        strike: false,
+        ..glyph
     };
-    fonts.draw(canvas, icon, gx, gy, glyph_size, Color::WHITE, fill);
+    fonts.draw(canvas, plain, gx, gy, glyph_size, Color::WHITE, fill);
 }

@@ -6,7 +6,8 @@
 use windows::Win32::Foundation::POINT;
 use windows::Win32::Foundation::{HWND, RECT};
 
-use discord_taskbar::assets::icons::{Icon, IconFonts};
+use discord_taskbar::assets::icons::IconFonts;
+use discord_taskbar::integration::discord::icons as glyphs;
 use discord_taskbar::assets::images::ImageCache;
 use discord_taskbar::model::Participant;
 use discord_taskbar::ui::menu::{self, Item};
@@ -42,7 +43,7 @@ fn main() {
         Item::Action {
             id: 1,
             label: "Mute for me".to_string(),
-            icon: Some(Icon::Volume),
+            icon: Some(glyphs::VOLUME),
             checked: false,
             danger: false,
         },
