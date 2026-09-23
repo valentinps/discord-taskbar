@@ -1,9 +1,12 @@
 //! A small drawn menu, in the same style as the rest of the widget.
 //!
 //! The native `TrackPopupMenu` works, but it looks like Windows 95 sitting
-//! under a panel that looks like Discord. This draws its own, reusing the
-//! canvas, the icon font and the theme, so a menu opened from the widget
-//! belongs to it.
+//! under a panel that does not. This draws its own, reusing the canvas, the
+//! icon font and the theme, so a menu opened from the widget belongs to it.
+//!
+//! The rows are generic: a header, a separator, a command, a slider and a
+//! preset that jumps the slider somewhere. Nothing here knows what a slider
+//! is measuring.
 //!
 //! Like the volume readout it is a top-level layered window, so it gets real
 //! per-pixel alpha and properly rounded corners. Unlike the readout it has to
@@ -36,6 +39,11 @@ pub enum Item {
     Header {
         name: String,
         image: Option<ImageRef>,
+        /// Size of the picture at 96 DPI. Worth matching a size the widget
+        /// already draws: that bitmap is then cached, and the header is
+        /// populated the instant the menu opens rather than after a fresh
+        /// download at a size nothing else uses.
+        image_size: i32,
     },
     Separator,
     Action {
@@ -45,27 +53,40 @@ pub enum Item {
         checked: bool,
         danger: bool,
     },
-    /// A click-anywhere volume bar, which is how Discord does it too.
-    Volume { value: f32 },
-    /// Jumps the volume to a fixed value. Like the bar and unlike a command,
+    /// A click-anywhere bar, which is how most volume sliders behave.
+    Slider {
+        label: String,
+        value: f32,
+        /// Lowest and highest the bar can be dragged to.
+        range: (f32, f32),
+        /// Turns a value into the number shown on the right.
+        ///
+        /// A plain function pointer, not a closure: it covers percentages,
+        /// decibels and durations, and it keeps `Item` free of lifetimes.
+        format: fn(f32) -> String,
+        /// Above this the fill turns to the danger colour — a volume being
+        /// boosted past normal, a meter into the red.
+        warn_above: Option<f32>,
+    },
+    /// Jumps the slider to a fixed value. Like the bar and unlike a command,
     /// it leaves the menu open — it is the same control by another route.
-    VolumePreset { label: String, value: f32 },
+    SliderPreset { label: String, value: f32 },
 }
 
 impl Item {
     fn selectable(&self) -> bool {
         matches!(
             self,
-            Item::Action { .. } | Item::Volume { .. } | Item::VolumePreset { .. }
+            Item::Action { .. } | Item::Slider { .. } | Item::SliderPreset { .. }
         )
     }
 }
 
 /// What the user picked.
 ///
-/// There is no volume variant. Dragging the bar is a continuous control, and
+/// There is no slider variant. Dragging the bar is a continuous control, and
 /// closing the menu the moment it is released would be like a slider that
-/// dismisses its own dialog — the change is applied through `on_volume` while
+/// dismisses its own dialog — the change is applied through `on_slide` while
 /// the menu stays open. Only discrete commands close it.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Choice {
@@ -79,13 +100,13 @@ pub struct Style<'a> {
     pub icon_fonts: &'a mut IconFonts,
     pub images: &'a mut ImageCache,
     pub dpi: u32,
-    /// Applies a volume as the bar is dragged, so the change is audible while
-    /// adjusting rather than only once the menu closes.
+    /// Applies a value as the bar is dragged, so the change takes effect
+    /// while adjusting rather than only once the menu closes.
     ///
     /// A callback rather than a return value because this has to happen mid-
     /// loop, and because it lets the caller hand over something cheap to
     /// clone that does not borrow the rest of its state.
-    pub on_volume: Option<&'a dyn Fn(f32)>,
+    pub on_slide: Option<&'a dyn Fn(f32)>,
 }
 
 impl Style<'_> {
@@ -101,7 +122,6 @@ struct Metrics {
     header: i32,
     separator: i32,
     radius: i32,
-    avatar: i32,
     icon: i32,
     gap: i32,
 }
@@ -114,10 +134,6 @@ fn metrics(style: &Style) -> Metrics {
         header: style.scale(40),
         separator: style.scale(7),
         radius: style.scale(8),
-        // Deliberately the widget's avatar size: that bitmap is already
-        // cached, so the header is populated the instant the menu opens
-        // rather than after a fresh download at a size nothing else uses.
-        avatar: style.scale(style.theme.avatar_size),
         icon: style.scale(15),
         gap: style.scale(9),
     }
@@ -127,7 +143,7 @@ fn item_height(item: &Item, m: &Metrics) -> i32 {
     match item {
         Item::Header { .. } => m.header,
         Item::Separator => m.separator,
-        Item::Action { .. } | Item::Volume { .. } | Item::VolumePreset { .. } => m.row,
+        Item::Action { .. } | Item::Slider { .. } | Item::SliderPreset { .. } => m.row,
     }
 }
 
@@ -136,8 +152,8 @@ fn item_height(item: &Item, m: &Metrics) -> i32 {
 pub struct Layout {
     /// Vertical extent of each row.
     rows: Vec<(i32, i32)>,
-    /// Horizontal extent of the volume bar, if there is one.
-    volume_bar: Option<(i32, i32)>,
+    /// Horizontal extent of the slider bar, if there is one.
+    slider_bar: Option<(i32, i32)>,
 }
 
 /// Draw the whole menu and report its layout.
@@ -146,7 +162,7 @@ fn render(
     items: &[Item],
     style: &mut Style,
     hovered: Option<usize>,
-    volume_override: Option<f32>,
+    slider_override: Option<f32>,
 ) -> Option<Layout> {
     let m = metrics(style);
 
@@ -169,7 +185,7 @@ fn render(
     );
 
     let mut rows = Vec::with_capacity(items.len());
-    let mut volume_bar = None;
+    let mut slider_bar = None;
     let mut y = m.padding;
 
     for (index, item) in items.iter().enumerate() {
@@ -194,26 +210,31 @@ fn render(
         }
 
         match item {
-            Item::Header { name, image } => {
-                let cx = inner_left as f32 + m.avatar as f32 / 2.0;
+            Item::Header {
+                name,
+                image,
+                image_size,
+            } => {
+                let picture = style.scale(*image_size);
+                let cx = inner_left as f32 + picture as f32 / 2.0;
                 let cy = (y + h / 2) as f32;
 
                 if let Some(image) = image {
-                    match style.images.image(image, m.avatar as u32) {
+                    match style.images.image(image, picture as u32) {
                         Some(bitmap) => {
                             let bitmap = bitmap.clone();
-                            canvas.draw_circular_bitmap(&bitmap, cx, cy, m.avatar as f32, 1.0);
+                            canvas.draw_circular_bitmap(&bitmap, cx, cy, picture as f32, 1.0);
                         }
                         None => canvas.fill_circle(
                             cx,
                             cy,
-                            m.avatar as f32 / 2.0,
-                            Color::rgb(0x4E, 0x50, 0x58),
+                            picture as f32 / 2.0,
+                            style.theme.placeholder,
                         ),
                     }
                 }
 
-                let text_x = inner_left + m.avatar + m.gap;
+                let text_x = inner_left + picture + m.gap;
                 canvas.draw_text_ellipsised(
                     name,
                     style.font,
@@ -285,7 +306,7 @@ fn render(
                 }
             }
 
-            Item::VolumePreset { label, value } => {
+            Item::SliderPreset { label, value } => {
                 canvas.draw_text(
                     label,
                     style.font,
@@ -294,7 +315,7 @@ fn render(
                     style.theme.text,
                 );
 
-                let target = format!("{}%", value.round() as i32);
+                let target = preset_text(items, *value);
                 let target_width = canvas.measure_text(&target, style.font).0;
                 canvas.draw_text(
                     &target,
@@ -305,36 +326,42 @@ fn render(
                 );
             }
 
-            Item::Volume { value } => {
+            Item::Slider {
+                label,
+                value,
+                range,
+                format,
+                warn_above,
+            } => {
                 // While dragging, show where the pointer is rather than the
-                // value Discord last confirmed.
-                let value = &volume_override.unwrap_or(*value);
+                // value the source last confirmed.
+                let value = slider_override.unwrap_or(*value);
 
-                let label_width = canvas.measure_text("Volume", style.font).0;
+                let label_width = canvas.measure_text(label, style.font).0;
                 canvas.draw_text(
-                    "Volume",
+                    label,
                     style.font,
                     inner_left,
                     y + (h - style.font.height) / 2,
                     style.theme.text_dim,
                 );
 
-                let percent = format!("{}%", value.round() as i32);
-                let percent_width = canvas.measure_text(&percent, style.font).0;
+                let shown = format(value);
+                let shown_width = canvas.measure_text(&shown, style.font).0;
                 canvas.draw_text(
-                    &percent,
+                    &shown,
                     style.font,
-                    inner_right - percent_width,
+                    inner_right - shown_width,
                     y + (h - style.font.height) / 2,
                     style.theme.text_dim,
                 );
 
                 let bar_left = inner_left + label_width + m.gap;
-                let bar_right = inner_right - percent_width - m.gap;
+                let bar_right = inner_right - shown_width - m.gap;
                 let bar_height = style.scale(4);
                 let bar_y = y + (h - bar_height) / 2;
 
-                volume_bar = Some((bar_left, bar_right));
+                slider_bar = Some((bar_left, bar_right));
 
                 if bar_right > bar_left {
                     canvas.fill_round_rect(
@@ -348,9 +375,11 @@ fn render(
                         style.theme.divider,
                     );
 
+                    let (low, high) = *range;
                     let span = bar_right - bar_left;
-                    let ceiling = style.theme.volume_ceiling(*value);
-                    let filled = (span as f32 * (value / ceiling)).round() as i32;
+                    let fraction =
+                        ((value - low) / (high - low).max(f32::EPSILON)).clamp(0.0, 1.0);
+                    let filled = (span as f32 * fraction).round() as i32;
                     if filled > 0 {
                         canvas.fill_round_rect(
                             RECT {
@@ -360,10 +389,9 @@ fn render(
                                 bottom: bar_y + bar_height,
                             },
                             bar_height / 2,
-                            if *value > 100.5 {
-                                style.theme.danger
-                            } else {
-                                style.theme.speaking
+                            match warn_above {
+                                Some(limit) if value > *limit => style.theme.danger,
+                                _ => style.theme.speaking,
                             },
                         );
                     }
@@ -374,42 +402,54 @@ fn render(
         y += h;
     }
 
-    Some(Layout { rows, volume_bar })
+    Some(Layout { rows, slider_bar })
 }
 
-/// The header's picture, if it has one.
-fn header_image(items: &[Item]) -> Option<ImageRef> {
+/// The header's picture and the size it is drawn at, if it has one.
+fn header_image(items: &[Item]) -> Option<(ImageRef, i32)> {
     items.iter().find_map(|item| match item {
-        Item::Header { image, .. } => image.clone(),
+        Item::Header {
+            image: Some(image),
+            image_size,
+            ..
+        } => Some((image.clone(), *image_size)),
         _ => None,
     })
 }
 
-/// The volume scale in force for this menu.
-///
-/// Taken from the bar's own value rather than from anything outside the item
-/// list: everything in this module is in the numbers the user sees.
-fn ceiling(style: &Style, items: &[Item]) -> f32 {
-    let current = items
+/// The slider's range, and the text one of its presets should show.
+fn slider_range(items: &[Item]) -> (f32, f32) {
+    items
         .iter()
         .find_map(|item| match item {
-            Item::Volume { value } => Some(*value),
+            Item::Slider { range, .. } => Some(*range),
             _ => None,
         })
-        .unwrap_or(0.0);
-    style.theme.volume_ceiling(current)
+        .unwrap_or((0.0, 1.0))
 }
 
-/// Map a click to a volume, using the bar's real extent.
+/// A preset shows its target in the slider's own units, so the two agree.
+fn preset_text(items: &[Item], value: f32) -> String {
+    items
+        .iter()
+        .find_map(|item| match item {
+            Item::Slider { format, .. } => Some(format(value)),
+            _ => None,
+        })
+        .unwrap_or_else(|| value.round().to_string())
+}
+
+/// Map a click to a value, using the bar's real extent.
 ///
 /// The first version estimated where the bar was from the metrics, which did
-/// not match where it had actually been drawn — the label and percentage are
+/// not match where it had actually been drawn — the label and the readout are
 /// measured text, so their widths are not knowable in advance. Clicking
-/// therefore set a volume some distance from the one under the pointer.
-fn volume_at(x: i32, bar: (i32, i32), ceiling: f32) -> f32 {
+/// therefore set a value some distance from the one under the pointer.
+fn value_at(x: i32, bar: (i32, i32), range: (f32, f32)) -> f32 {
     let (left, right) = bar;
+    let (low, high) = range;
     let span = (right - left).max(1);
-    (((x - left) as f32 / span as f32) * ceiling).clamp(0.0, ceiling)
+    (low + ((x - left) as f32 / span as f32) * (high - low)).clamp(low, high)
 }
 
 fn register_class() -> bool {
@@ -436,8 +476,8 @@ fn register_class() -> bool {
 pub struct Outcome {
     /// A discrete command, if one was chosen.
     pub choice: Option<Choice>,
-    /// The volume the bar was left at, if it was touched. Already applied.
-    pub volume: Option<f32>,
+    /// The value the bar was left at, if it was touched. Already applied.
+    pub slider: Option<f32>,
     /// Where the click that dismissed the menu landed, in screen coordinates.
     ///
     /// The menu swallows that click whole, so the caller is the only thing
@@ -464,8 +504,8 @@ pub fn show(
 
     // Kick the header fetch off before the first draw, so it has the whole
     // window-creation round trip to arrive in.
-    if let Some(image) = header_image(items) {
-        let size = metrics(style).avatar as u32;
+    if let Some((image, size)) = header_image(items) {
+        let size = style.scale(size) as u32;
         style.images.image(&image, size);
     }
 
@@ -545,28 +585,28 @@ pub fn show(
     outcome
 }
 
-/// The volume the menu is showing and has applied.
+/// The value the slider is showing and has applied.
 ///
 /// `dragging` is the live pointer position while the button is held;
 /// `settled` outlives it so the bar keeps showing where it was left rather
 /// than reverting to the value the menu opened with.
 #[derive(Default)]
-struct VolumeState {
+struct SliderState {
     dragging: Option<f32>,
     settled: Option<f32>,
-    /// Last whole percent handed to `on_volume`. Mouse movement produces far
-    /// more updates than Discord needs, and each one is a request down the
-    /// pipe.
+    /// Last whole value handed to `on_slide`. Mouse movement produces far
+    /// more updates than any source needs, and each one is likely a request
+    /// somewhere.
     last_sent: Option<i32>,
 }
 
-impl VolumeState {
+impl SliderState {
     /// What the bar should display, or `None` to use the item's own value.
     fn shown(&self) -> Option<f32> {
         self.dragging.or(self.settled)
     }
 
-    /// Record a new volume and apply it, unless it rounds to the last one.
+    /// Record a new value and apply it, unless it rounds to the last one.
     fn set(&mut self, style: &Style, value: f32, dragging: bool) {
         if dragging {
             self.dragging = Some(value);
@@ -579,7 +619,7 @@ impl VolumeState {
         }
         self.last_sent = Some(rounded);
 
-        if let Some(apply) = style.on_volume {
+        if let Some(apply) = style.on_slide {
             apply(value);
         }
     }
@@ -598,12 +638,12 @@ fn run_loop(
     let height = canvas.height();
 
     let mut hovered: Option<usize> = None;
-    let mut volume = VolumeState::default();
+    let mut slider = SliderState::default();
     let mut dismissed_at: Option<POINT> = None;
 
-    let volume_row = items
+    let slider_row = items
         .iter()
-        .position(|item| matches!(item, Item::Volume { .. }));
+        .position(|item| matches!(item, Item::Slider { .. }));
 
     let choice = unsafe {
         loop {
@@ -630,9 +670,9 @@ fn run_loop(
             let repaint = |canvas: &mut Canvas,
                                style: &mut Style,
                                hovered: Option<usize>,
-                               volume: &VolumeState,
+                               slider: &SliderState,
                                layout: &mut Layout| {
-                if let Some(next) = render(canvas, items, style, hovered, volume.shown()) {
+                if let Some(next) = render(canvas, items, style, hovered, slider.shown()) {
                     *layout = next;
                     canvas.present_layered_at(hwnd, origin.x, origin.y);
                 }
@@ -644,10 +684,11 @@ fn run_loop(
 
                     // A drag tracks the pointer even outside the row, which is
                     // what makes reaching either end of the scale possible.
-                    if volume.dragging.is_some() {
-                        if let Some(bar) = layout.volume_bar {
-                            volume.set(style, volume_at(local.x, bar, ceiling(style, items)), true);
-                            repaint(canvas, style, hovered, &volume, &mut layout);
+                    if slider.dragging.is_some() {
+                        if let Some(bar) = layout.slider_bar {
+                            let value = value_at(local.x, bar, slider_range(items));
+                            slider.set(style, value, true);
+                            repaint(canvas, style, hovered, &slider, &mut layout);
                         }
                         continue;
                     }
@@ -659,7 +700,7 @@ fn run_loop(
 
                     if next != hovered {
                         hovered = next;
-                        repaint(canvas, style, hovered, &volume, &mut layout);
+                        repaint(canvas, style, hovered, &slider, &mut layout);
                     }
                 }
 
@@ -679,21 +720,22 @@ fn run_loop(
 
                     // Grabbing the bar starts a drag and applies immediately,
                     // so the press itself is the first adjustment.
-                    if message.message == WM_LBUTTONDOWN && row_at(local) == volume_row {
-                        if let Some(bar) = layout.volume_bar {
-                            volume.set(style, volume_at(local.x, bar, ceiling(style, items)), true);
-                            repaint(canvas, style, hovered, &volume, &mut layout);
+                    if message.message == WM_LBUTTONDOWN && row_at(local) == slider_row {
+                        if let Some(bar) = layout.slider_bar {
+                            let value = value_at(local.x, bar, slider_range(items));
+                            slider.set(style, value, true);
+                            repaint(canvas, style, hovered, &slider, &mut layout);
                         }
                     }
                 }
 
                 WM_LBUTTONUP => {
-                    // Ending a drag leaves the menu open: the volume is
+                    // Ending a drag leaves the menu open: the value is
                     // already applied, and dismissing here would make the
                     // slider feel like it had cancelled itself.
-                    if let Some(value) = volume.dragging.take() {
-                        volume.set(style, value, false);
-                        repaint(canvas, style, hovered, &volume, &mut layout);
+                    if let Some(value) = slider.dragging.take() {
+                        slider.set(style, value, false);
+                        repaint(canvas, style, hovered, &slider, &mut layout);
                         continue;
                     }
 
@@ -709,11 +751,11 @@ fn run_loop(
                     match &items[index] {
                         // A command closes the menu.
                         Item::Action { id, .. } => break Some(Choice::Action(*id)),
-                        // A preset is the volume control by another route, so
-                        // it behaves like the bar and stays open.
-                        Item::VolumePreset { value, .. } => {
-                            volume.set(style, *value, false);
-                            repaint(canvas, style, hovered, &volume, &mut layout);
+                        // A preset is the slider by another route, so it
+                        // behaves like the bar and stays open.
+                        Item::SliderPreset { value, .. } => {
+                            slider.set(style, *value, false);
+                            repaint(canvas, style, hovered, &slider, &mut layout);
                         }
                         _ => continue,
                     }
@@ -731,7 +773,7 @@ fn run_loop(
                         break None;
                     }
                     if style.images.collect() {
-                        repaint(canvas, style, hovered, &volume, &mut layout);
+                        repaint(canvas, style, hovered, &slider, &mut layout);
                     }
                 }
 
@@ -753,7 +795,7 @@ fn run_loop(
 
     Outcome {
         choice,
-        volume: volume.settled,
+        slider: slider.settled,
         dismissed_at,
     }
 }

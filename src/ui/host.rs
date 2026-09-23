@@ -683,19 +683,30 @@ impl App {
             return;
         };
 
-        let mut view = popup::VolumeView {
-            name: &name,
-            volume,
+        // The readout works in whatever the number means; deciding that it
+        // means a percentage, and that past 100 is a boost worth colouring,
+        // is Discord's business rather than the widget's.
+        let ceiling = self.theme.volume_ceiling(volume);
+        let mut view = popup::Meter {
+            title: &name,
+            value_text: view::percent(volume),
+            fraction: volume / ceiling,
+            fill: if volume > 100.5 {
+                self.theme.danger
+            } else {
+                self.theme.speaking
+            },
             image: participant
                 .as_ref()
                 .map(|p| p.avatar_ref(self.theme.avatar_size as u32)),
+            image_size: self.theme.avatar_size,
             theme: &self.theme,
             font: &font,
             images: &mut self.images,
             dpi,
         };
 
-        let size = popup::draw_volume(canvas, &mut view);
+        let size = popup::draw_meter(canvas, &mut view);
         self.return_font(dpi, font);
 
         let Some((width, height)) = size else {
@@ -806,10 +817,15 @@ impl App {
                 return;
             };
 
+            // Everything the menu deals in is the perceptual percentage
+            // Discord's own slider shows, not the amplitude underneath it.
+            let shown = self.theme.shown_volume(participant.volume);
+
             let items = vec![
                 menu::Item::Header {
                     name: participant.display_name.clone(),
                     image: Some(participant.avatar_ref(self.theme.avatar_size as u32)),
+                    image_size: self.theme.avatar_size,
                 },
                 menu::Item::Separator,
                 menu::Item::Action {
@@ -827,10 +843,16 @@ impl App {
                     checked: participant.local_mute,
                     danger: participant.local_mute,
                 },
-                menu::Item::Volume {
-                    value: self.theme.shown_volume(participant.volume),
+                menu::Item::Slider {
+                    label: "Volume".to_string(),
+                    value: shown,
+                    // Zero to whatever scale Discord's own slider is on.
+                    range: (0.0, self.theme.volume_ceiling(shown)),
+                    format: view::percent,
+                    // Past 100% is boosting, which is worth saying in colour.
+                    warn_above: Some(100.5),
                 },
-                menu::Item::VolumePreset {
+                menu::Item::SliderPreset {
                     label: "Reset volume".to_string(),
                     value: 100.0,
                 },
@@ -866,10 +888,10 @@ impl App {
             let control = self.control.clone();
             let applying_to = target.clone();
             let curve = (self.theme.volume_curve, self.theme.volume_boost_db);
-            let apply = move |volume: f32| {
+            let apply = move |shown: f32| {
                 // The bar hands back a perceptual percentage; Discord wants
                 // the amplitude.
-                let amplitude = crate::volume::perceptual_to_amplitude(volume, curve.0, curve.1);
+                let amplitude = crate::volume::perceptual_to_amplitude(shown, curve.0, curve.1);
                 control.set_user_voice(&applying_to, Some(amplitude), None);
             };
 
@@ -880,7 +902,7 @@ impl App {
                     icon_fonts: &mut self.icon_fonts,
                     images: &mut self.images,
                     dpi,
-                    on_volume: Some(&apply),
+                    on_slide: Some(&apply),
                 };
                 menu::show(&items, &mut style, anchor, info.edge != Edge::Top, info.rect)
             };
@@ -888,9 +910,9 @@ impl App {
 
             // Reconcile our own copy with whatever the bar was left at;
             // Discord's own event will confirm it shortly.
-            if let Some(volume) = outcome.volume {
+            if let Some(shown) = outcome.slider {
                 if let Some(participant) = self.status.participant_mut(&target) {
-                    participant.volume = self.theme.stored_volume(volume);
+                    participant.volume = self.theme.stored_volume(shown);
                 }
                 self.refresh();
             }

@@ -25,6 +25,12 @@ pub const ID_LEAVE: &str = "leave";
 /// One participant, as `user:<id>`.
 pub const ID_USER: &str = "user";
 
+/// How Discord writes a volume: the perceptual percentage from its own
+/// slider, with no decimal places.
+pub fn percent(value: f32) -> String {
+    format!("{}%", value.round() as i32)
+}
+
 /// The user this block is about, if it is about one.
 pub fn user_of(id: &BlockId) -> Option<&str> {
     id.suffix(ID_USER)

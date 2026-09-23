@@ -9,7 +9,8 @@ use windows::Win32::Foundation::HWND;
 
 use discord_taskbar::assets::images::ImageCache;
 use discord_taskbar::model::Participant;
-use discord_taskbar::ui::popup::{self, VolumeView};
+use discord_taskbar::integration::discord::view;
+use discord_taskbar::ui::popup::{self, Meter};
 use discord_taskbar::ui::render::{Canvas, Font};
 use discord_taskbar::ui::theme::{Appearance, Theme};
 use discord_taskbar::ui::Notifier;
@@ -36,16 +37,20 @@ fn main() {
     // Warm the avatar cache before drawing anything.
     let mut scratch = Canvas::new(1, 1).expect("scratch");
     {
-        let mut view = VolumeView {
-            name: &participant.display_name,
-            volume: 100.0,
+        let shown = 100.0;
+        let mut view = Meter {
+            title: &participant.display_name,
+            value_text: view::percent(shown),
+            fraction: shown / theme.volume_ceiling(shown),
+            fill: if shown > 100.5 { theme.danger } else { theme.speaking },
             image: Some(participant.avatar_ref(theme.avatar_size as u32)),
+            image_size: theme.avatar_size,
             theme: &theme,
             font: &font,
             images: &mut images,
             dpi: 96,
         };
-        popup::draw_volume(&mut scratch, &mut view);
+        popup::draw_meter(&mut scratch, &mut view);
     }
     for _ in 0..40 {
         if images.collect() {
@@ -59,16 +64,20 @@ fn main() {
     let mut tiles = Vec::new();
     for level in LEVELS {
         let mut canvas = Canvas::new(1, 1).expect("tile");
-        let mut view = VolumeView {
-            name: "Cleo",
-            volume: *level,
+        let shown = *level;
+        let mut view = Meter {
+            title: "Cleo",
+            value_text: view::percent(shown),
+            fraction: shown / theme.volume_ceiling(shown),
+            fill: if shown > 100.5 { theme.danger } else { theme.speaking },
             image: Some(participant.avatar_ref(theme.avatar_size as u32)),
+            image_size: theme.avatar_size,
             theme: &theme,
             font: &font,
             images: &mut images,
             dpi: 96,
         };
-        let size = popup::draw_volume(&mut canvas, &mut view).expect("draw");
+        let size = popup::draw_meter(&mut canvas, &mut view).expect("draw");
         tiles.push((canvas, size));
     }
 
@@ -162,18 +171,22 @@ fn live() {
 
     for step in 0..24 {
         let volume = (step as f32 * 10.0) % 210.0;
-        let mut view = VolumeView {
-            name: "Cleo",
-            volume,
+        let shown = volume;
+        let mut view = Meter {
+            title: "Cleo",
+            value_text: view::percent(shown),
+            fraction: shown / theme.volume_ceiling(shown),
+            fill: if shown > 100.5 { theme.danger } else { theme.speaking },
             image: Some(participant.avatar_ref(theme.avatar_size as u32)),
+            image_size: theme.avatar_size,
             theme: &theme,
             font: &font,
             images: &mut images,
             dpi: info.dpi,
         };
 
-        let Some((w, h)) = popup::draw_volume(&mut canvas, &mut view) else {
-            eprintln!("draw_volume failed");
+        let Some((w, h)) = popup::draw_meter(&mut canvas, &mut view) else {
+            eprintln!("draw_meter failed");
             return;
         };
 

@@ -8,6 +8,7 @@ use windows::Win32::Foundation::{HWND, RECT};
 
 use discord_taskbar::assets::icons::IconFonts;
 use discord_taskbar::integration::discord::icons as glyphs;
+use discord_taskbar::integration::discord::view;
 use discord_taskbar::assets::images::ImageCache;
 use discord_taskbar::model::Participant;
 use discord_taskbar::ui::menu::{self, Item};
@@ -39,6 +40,7 @@ fn main() {
         Item::Header {
             name: participant.display_name.clone(),
             image: Some(participant.avatar_ref(theme.avatar_size as u32)),
+            image_size: theme.avatar_size,
         },
         Item::Separator,
         Item::Action {
@@ -48,10 +50,14 @@ fn main() {
             checked: false,
             danger: false,
         },
-        Item::Volume {
+        Item::Slider {
+            label: "Volume".to_string(),
             value: participant.volume,
+            range: (0.0, theme.volume_ceiling(participant.volume)),
+            format: view::percent,
+            warn_above: Some(100.5),
         },
-        Item::VolumePreset {
+        Item::SliderPreset {
             label: "Reset volume".to_string(),
             value: 100.0,
         },
@@ -87,11 +93,11 @@ fn main() {
         icon_fonts: &mut icon_fonts,
         images: &mut images,
         dpi: bar.dpi,
-        on_volume: Some(&applied),
+        on_slide: Some(&applied),
     };
 
     let outcome = menu::show(&items, &mut style, anchor, true, bar.rect);
     println!("chose: {:?}", outcome.choice);
-    println!("volume left at: {:?}", outcome.volume);
+    println!("volume left at: {:?}", outcome.slider);
     let _ = RECT::default();
 }

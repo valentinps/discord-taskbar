@@ -136,31 +136,43 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM)
     }
 }
 
-/// Everything the volume readout needs to draw itself.
-pub struct VolumeView<'a> {
-    pub name: &'a str,
-    pub volume: f32,
-    /// Shown beside the name; `None` for a readout with no picture.
+/// A one-line readout: a picture, a name, a number and a bar.
+///
+/// Says nothing about what is being measured. The caller has already decided
+/// what the number reads as and how full the bar is, which is what keeps a
+/// volume, a download and a battery the same window.
+pub struct Meter<'a> {
+    pub title: &'a str,
+    /// The number on the right, already formatted.
+    pub value_text: String,
+    /// How full the bar is, 0 to 1.
+    pub fraction: f32,
+    /// The bar's fill. The caller picks it, so "past normal" can be coloured
+    /// differently without this knowing what normal is.
+    pub fill: Color,
+    /// Shown beside the title; `None` for a readout with no picture.
     pub image: Option<ImageRef>,
+    /// Size of that picture at 96 DPI. Worth matching a size the widget
+    /// already draws: that bitmap is then cached, so the readout is populated
+    /// the instant it appears rather than after a fresh download at a size
+    /// nothing else uses.
+    pub image_size: i32,
     pub theme: &'a Theme,
     pub font: &'a Font,
     pub images: &'a mut ImageCache,
     pub dpi: u32,
 }
 
-impl VolumeView<'_> {
+impl Meter<'_> {
     fn scale(&self, value: i32) -> i32 {
         (value as i64 * self.dpi as i64 / 96) as i32
     }
 }
 
-/// Render the volume readout, sizing `canvas` to fit. Returns its size.
-pub fn draw_volume(canvas: &mut Canvas, view: &mut VolumeView) -> Option<(i32, i32)> {
+/// Render the readout, sizing `canvas` to fit. Returns its size.
+pub fn draw_meter(canvas: &mut Canvas, view: &mut Meter) -> Option<(i32, i32)> {
     let padding = view.scale(10);
-    // The widget's avatar size, not a size of its own: that bitmap is already
-    // cached, so the readout is populated the instant it appears rather than
-    // after a fresh download at a size nothing else uses.
-    let avatar = view.scale(view.theme.avatar_size);
+    let avatar = view.scale(view.image_size);
     let gap = view.scale(8);
     let bar_height = view.scale(5);
     let width = view.scale(210);
@@ -200,7 +212,7 @@ pub fn draw_volume(canvas: &mut Canvas, view: &mut VolumeView) -> Option<(i32, i
                 cx,
                 centre_y as f32,
                 avatar as f32 / 2.0,
-                Color::rgb(0x4E, 0x50, 0x58),
+                view.theme.placeholder,
             ),
         }
     }
@@ -208,31 +220,30 @@ pub fn draw_volume(canvas: &mut Canvas, view: &mut VolumeView) -> Option<(i32, i
     let text_x = padding + avatar + gap;
     let text_width = width - text_x - padding;
 
-    // Name on the left, percentage right-aligned on the same line.
-    let percent = format!("{}%", view.volume.round() as i32);
-    let percent_width = canvas.measure_text(&percent, view.font).0;
-    let name_width = (text_width - percent_width - gap).max(0);
+    // Title on the left, value right-aligned on the same line.
+    let value_width = canvas.measure_text(&view.value_text, view.font).0;
+    let title_width = (text_width - value_width - gap).max(0);
     let text_y = centre_y - view.font.height - name_lift;
 
     canvas.draw_text_ellipsised(
-        view.name,
+        view.title,
         view.font,
         text_x,
         text_y,
-        name_width,
+        title_width,
         view.theme.text,
     );
     canvas.draw_text(
-        &percent,
+        &view.value_text,
         view.font,
-        text_x + text_width - percent_width,
+        text_x + text_width - value_width,
         text_y,
         view.theme.text_dim,
     );
 
-    // Track, then fill. At the default 200% ceiling that puts normal volume
-    // at the midpoint, so boosting past it is visibly past halfway rather
-    // than hidden at the end of the bar.
+    // Track, then fill. What the full width means is the caller's business:
+    // for volume a 200% ceiling puts normal at the midpoint, so boosting past
+    // it is visibly past halfway rather than hidden at the end of the bar.
     let bar_y = centre_y + bar_lift;
     canvas.fill_round_rect(
         windows::Win32::Foundation::RECT {
@@ -245,8 +256,7 @@ pub fn draw_volume(canvas: &mut Canvas, view: &mut VolumeView) -> Option<(i32, i
         view.theme.divider,
     );
 
-    let ceiling = view.theme.volume_ceiling(view.volume);
-    let filled = (text_width as f32 * (view.volume / ceiling)).round() as i32;
+    let filled = (text_width as f32 * view.fraction.clamp(0.0, 1.0)).round() as i32;
     if filled > 0 {
         canvas.fill_round_rect(
             windows::Win32::Foundation::RECT {
@@ -256,11 +266,7 @@ pub fn draw_volume(canvas: &mut Canvas, view: &mut VolumeView) -> Option<(i32, i
                 bottom: bar_y + bar_height,
             },
             bar_height / 2,
-            if view.volume > 100.5 {
-                view.theme.danger
-            } else {
-                view.theme.speaking
-            },
+            view.fill,
         );
     }
 
