@@ -301,7 +301,7 @@ fn render(
                         (inner_right - style.scale(4)) as f32,
                         (y + h / 2) as f32,
                         style.scale(3) as f32,
-                        style.theme.speaking,
+                        style.theme.accent,
                     );
                 }
             }
@@ -391,7 +391,7 @@ fn render(
                             bar_height / 2,
                             match warn_above {
                                 Some(limit) if value > *limit => style.theme.danger,
-                                _ => style.theme.speaking,
+                                _ => style.theme.accent,
                             },
                         );
                     }

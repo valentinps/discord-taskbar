@@ -8,6 +8,7 @@
 pub mod icons;
 pub mod model;
 pub mod provider;
+pub mod settings;
 pub mod view;
 pub mod volume;
 
@@ -21,9 +22,10 @@ use crate::ui::integration::{
 };
 use crate::ui::menu;
 use crate::ui::render::Color;
-use crate::ui::theme::{MiddleClick, Theme};
+use crate::ui::theme::Theme;
 
 use model::VoiceStatus;
+use settings::{MiddleClick, Settings, Stored};
 use provider::{ProviderControl, ProviderEvent};
 
 /// Where Discord serves avatars and server icons.
@@ -51,6 +53,9 @@ const ID_FOCUS_FROM_MENU: usize = 2;
 pub struct Discord {
     status: VoiceStatus,
     control: ProviderControl,
+    /// Everything this integration lets you change. Reloaded whenever the
+    /// config is saved.
+    settings: Settings,
     creds: Credentials,
     /// Drive the widget from a synthetic call instead of the real client, so
     /// interface work does not require being in a voice channel.
@@ -61,6 +66,7 @@ impl Discord {
     pub fn new(creds: Credentials, demo: bool) -> Self {
         Discord {
             status: VoiceStatus::default(),
+            settings: Settings::default(),
             control: if demo {
                 ProviderControl::demo()
             } else {
@@ -132,7 +138,8 @@ impl Discord {
     /// own slider.
     fn set_user_volume(&mut self, user_id: &str, shown: f32, hold: Duration, ui: &mut dyn Ui) {
         let theme = ui.theme().clone();
-        let amplitude = theme.stored_volume(shown);
+        let settings = self.settings.clone();
+        let amplitude = settings.stored_volume(shown);
         if !self.control.set_user_voice(user_id, Some(amplitude), None) {
             return;
         }
@@ -149,13 +156,14 @@ impl Discord {
             participant.volume = amplitude;
         }
 
-        self.raise_meter(user_id, &name, shown, hold, &theme, ui);
+        self.raise_meter(user_id, &name, shown, hold, &theme, &settings, ui);
         // Redraw too: dropping to zero dims the avatar. The layout is
         // unchanged, so the pointer stays over the same person and the next
         // notch lands where this one did.
         ui.redraw();
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn raise_meter(
         &self,
         user_id: &str,
@@ -163,6 +171,7 @@ impl Discord {
         shown: f32,
         hold: Duration,
         theme: &Theme,
+        settings: &Settings,
         ui: &mut dyn Ui,
     ) {
         let image = self
@@ -170,21 +179,21 @@ impl Discord {
             .participants
             .iter()
             .find(|p| p.user_id == user_id)
-            .map(|p| p.avatar_ref(theme.avatar_size as u32));
+            .map(|p| p.avatar_ref(settings.avatar_size as u32));
 
         ui.show_meter(Meter {
             about: BlockId::new(format!("{}:{user_id}", view::ID_USER)),
             title: name.to_string(),
             value_text: view::percent(shown),
-            fraction: shown / theme.volume_ceiling(shown),
+            fraction: shown / settings.volume_ceiling(shown),
             // Past 100% is boosting, which is worth saying in colour.
             fill: if shown > 100.5 {
                 theme.danger
             } else {
-                theme.speaking
+                theme.accent
             },
             image,
-            image_size: theme.avatar_size,
+            image_size: settings.avatar_size,
             hold,
         });
     }
@@ -200,14 +209,14 @@ impl Discord {
             return;
         }
 
-        let theme = ui.theme().clone();
+        let settings = self.settings.clone();
         // A notch moves the number the user can see, which is Discord's
         // perceptual percentage — not the amplitude underneath it. Stepping
         // the amplitude instead would move the slider by wildly different
         // amounts depending on where it already was.
-        let shown = theme.shown_volume(participant.volume);
-        let ceiling = theme.volume_ceiling(shown);
-        let next = (shown + notches as f32 * theme.scroll_volume_step as f32).clamp(0.0, ceiling);
+        let shown = settings.shown_volume(participant.volume);
+        let ceiling = settings.volume_ceiling(shown);
+        let next = (shown + notches as f32 * settings.scroll_volume_step as f32).clamp(0.0, ceiling);
 
         // Opened by the wheel, so the pointer is already on the avatar and
         // moving off it should dismiss immediately.
@@ -240,16 +249,16 @@ impl Discord {
                 return;
             };
 
-            let theme = ui.theme().clone();
+        let settings = self.settings.clone();
             // Everything in the menu is the perceptual percentage Discord's
             // own slider shows, not the amplitude underneath it.
-            let shown = theme.shown_volume(participant.volume);
+            let shown = settings.shown_volume(participant.volume);
 
             let items = vec![
                 menu::Item::Header {
                     name: participant.display_name.clone(),
-                    image: Some(participant.avatar_ref(theme.avatar_size as u32)),
-                    image_size: theme.avatar_size,
+                    image: Some(participant.avatar_ref(settings.avatar_size as u32)),
+                    image_size: settings.avatar_size,
                 },
                 menu::Item::Separator,
                 menu::Item::Action {
@@ -270,7 +279,7 @@ impl Discord {
                 menu::Item::Slider {
                     label: "Volume".to_string(),
                     value: shown,
-                    range: (0.0, theme.volume_ceiling(shown)),
+                    range: (0.0, settings.volume_ceiling(shown)),
                     format: view::percent,
                     warn_above: Some(100.5),
                 },
@@ -293,7 +302,7 @@ impl Discord {
             // cheap to clone and borrows nothing else here.
             let control = self.control.clone();
             let applying_to = target.clone();
-            let curve = (theme.volume_curve, theme.volume_boost_db);
+            let curve = (settings.volume_curve, settings.volume_boost_db);
             let apply = move |shown: f32| {
                 // The bar hands back a perceptual percentage; Discord wants
                 // the amplitude.
@@ -307,7 +316,7 @@ impl Discord {
             // Discord's own event will confirm it shortly.
             if let Some(shown) = outcome.slider {
                 if let Some(participant) = self.status.participant_mut(&target) {
-                    participant.volume = theme.stored_volume(shown);
+                    participant.volume = settings.stored_volume(shown);
                 }
                 ui.redraw();
             }
@@ -396,8 +405,25 @@ impl Integration for Discord {
         true
     }
 
+    fn settings_fields(&self) -> Vec<crate::ui::settings::Field> {
+        settings::fields()
+    }
+
+    fn settings_intro(&self) -> Option<crate::ui::settings::Intro> {
+        Some(settings::intro())
+    }
+
+    fn apply_settings(&mut self, stored: &serde_json::Value) {
+        let stored: Stored = serde_json::from_value(stored.clone()).unwrap_or_default();
+        self.creds = Credentials {
+            client_id: stored.client_id.clone(),
+            client_secret: stored.client_secret.clone(),
+        };
+        self.settings = Settings::from(&stored);
+    }
+
     fn blocks(&self, theme: &Theme) -> Vec<Block> {
-        view::blocks(&self.status, theme)
+        view::blocks(&self.status, theme, &self.settings)
     }
 
     fn tooltip(&self) -> String {
@@ -444,7 +470,7 @@ impl Integration for Discord {
                 let Some(user_id) = view::user_of(&id).map(str::to_string) else {
                     return;
                 };
-                match ui.theme().middle_click {
+                match self.settings.middle_click {
                     MiddleClick::None => {}
                     MiddleClick::LocalMute => self.toggle_local_mute(&user_id, ui),
                     MiddleClick::VolumeReset => {

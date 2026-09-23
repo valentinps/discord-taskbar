@@ -11,6 +11,7 @@ use windows::Win32::System::Threading::GetCurrentProcess;
 use discord_taskbar::assets::icons::IconFonts;
 use discord_taskbar::assets::images::ImageCache;
 use discord_taskbar::integration::discord::model::{Participant, VoiceStatus};
+use discord_taskbar::integration::discord::settings::Settings;
 use discord_taskbar::integration::discord::view;
 use discord_taskbar::ui::block::{self, Context};
 use discord_taskbar::ui::render::{Canvas, Color, Font};
@@ -22,6 +23,7 @@ const REPORT_EVERY: usize = 1_000;
 
 fn main() {
     let theme = Theme::from(&Appearance::default());
+    let settings = Settings::default();
     let height = theme.height;
 
     let mut images = ImageCache::new(Notifier::new(HWND(std::ptr::null_mut()), 0));
@@ -52,7 +54,7 @@ fn main() {
             theme.background,
         );
 
-        let blocks = view::blocks(&status, &theme);
+        let blocks = view::blocks(&status, &theme, &settings);
         let mut ctx = Context {
             theme: &theme,
             font: &font,

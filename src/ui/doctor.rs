@@ -191,7 +191,8 @@ fn section_config(out: &mut String) {
         }
     }
 
-    let id = config.discord.client_id.trim();
+    let creds = crate::integration::discord::settings::credentials(&config);
+    let id = creds.client_id.trim();
     if id.is_empty() {
         let _ = writeln!(
             out,
@@ -213,7 +214,8 @@ fn section_config(out: &mut String) {
     }
 
     // Never printed, only measured: the report is meant to be pasted around.
-    let secret = config.discord.client_secret.trim();
+    let creds = crate::integration::discord::settings::credentials(&config);
+    let secret = creds.client_secret.trim();
     if secret.is_empty() {
         let _ = writeln!(
             out,
@@ -302,7 +304,8 @@ fn section_discord(out: &mut String) {
     );
 
     let (config, _) = Config::load();
-    let id = config.discord.client_id.trim();
+    let creds = crate::integration::discord::settings::credentials(&config);
+    let id = creds.client_id.trim();
     if id.is_empty() {
         let _ = writeln!(
             out,
@@ -598,7 +601,7 @@ fn probe_discord(hwnd: HWND) {
 /// application actually fails — so the only way to diagnose it is to try it.
 fn try_sign_in(hwnd: HWND) {
     let (config, _) = Config::load();
-    let credentials = config.discord.clone();
+    let credentials = crate::integration::discord::settings::credentials(&config);
 
     if !credentials.is_complete() {
         append(

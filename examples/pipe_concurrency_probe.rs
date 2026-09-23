@@ -22,7 +22,8 @@ use discord_taskbar::integration::discord::provider::rpc::pipe::{self, IpcConnec
 
 fn main() {
     let (config, _) = Config::load_or_create();
-    let client_id = config.discord.client_id.clone();
+    let creds = discord_taskbar::integration::discord::settings::credentials(&config);
+    let client_id = creds.client_id.clone();
     if client_id.is_empty() {
         eprintln!("client_id not configured");
         return;

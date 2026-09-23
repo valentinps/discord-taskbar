@@ -14,11 +14,13 @@ use discord_taskbar::integration::discord::model::Participant;
 use discord_taskbar::ui::menu::{self, Item};
 use discord_taskbar::ui::render::Font;
 use discord_taskbar::ui::taskbar;
+use discord_taskbar::integration::discord::settings::Settings;
 use discord_taskbar::ui::theme::{Appearance, Theme};
 use discord_taskbar::ui::Notifier;
 
 fn main() {
     let theme = Theme::from(&Appearance::default());
+    let settings = Settings::default();
     let font = Font::system_ui(theme.font_size, false).expect("font");
     let mut images = ImageCache::new(Notifier::new(HWND(std::ptr::null_mut()), 0));
     let mut icon_fonts = IconFonts::new();
@@ -39,8 +41,8 @@ fn main() {
     let items = vec![
         Item::Header {
             name: participant.display_name.clone(),
-            image: Some(participant.avatar_ref(theme.avatar_size as u32)),
-            image_size: theme.avatar_size,
+            image: Some(participant.avatar_ref(settings.avatar_size as u32)),
+            image_size: settings.avatar_size,
         },
         Item::Separator,
         Item::Action {
@@ -53,7 +55,7 @@ fn main() {
         Item::Slider {
             label: "Volume".to_string(),
             value: participant.volume,
-            range: (0.0, theme.volume_ceiling(participant.volume)),
+            range: (0.0, settings.volume_ceiling(participant.volume)),
             format: view::percent,
             warn_above: Some(100.5),
         },

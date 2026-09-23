@@ -9,6 +9,7 @@ use windows::Win32::Foundation::{HWND, RECT};
 use discord_taskbar::assets::icons::IconFonts;
 use discord_taskbar::assets::images::ImageCache;
 use discord_taskbar::integration::discord::model::{Participant, VoiceStatus};
+use discord_taskbar::integration::discord::settings::{Settings, Stored};
 use discord_taskbar::integration::discord::view;
 use discord_taskbar::ui::block::{self, Context};
 use discord_taskbar::ui::render::{Canvas, Color, Font};
@@ -31,6 +32,7 @@ fn person(index: usize) -> Participant {
 
 fn main() {
     let theme = Theme::from(&Appearance::default());
+    let settings = Settings::default();
     let height = theme.height;
 
     // One row per visual case.
@@ -92,7 +94,7 @@ fn main() {
             dpi: 96,
         };
         // Laying out once queues every avatar and the server icon.
-        let blocks = view::blocks(&status, &theme);
+        let blocks = view::blocks(&status, &theme, &settings);
         block::layout(&mut probe, &mut ctx, &blocks, height, true);
     }
     // Give the fetch worker a moment; probes are allowed to be patient.
@@ -101,30 +103,35 @@ fn main() {
         std::thread::sleep(std::time::Duration::from_millis(100));
     }
 
-    // Per-case theme tweaks, so the config options are exercised too.
-    let themes: Vec<Theme> = cases
+    // Per-case tweaks, so the config options are exercised too. The widget's
+    // look and the integration's own sizes are separate settings now, so each
+    // case carries one of each.
+    let tweaked: Vec<(Theme, Settings)> = cases
         .iter()
         .map(|(name, _)| {
             let mut appearance = Appearance::default();
+            let mut stored = Stored::default();
             match *name {
-                "no overlap (avatar_overlap -4)" => appearance.avatar_overlap = -4,
+                "no overlap (avatar_overlap -4)" => stored.avatar_overlap = -4,
                 "integrated look" => {
                     appearance.background = "#00000000".to_string();
                     appearance.height = 0;
-                    appearance.avatar_size = 28;
                     appearance.icon_size = 20;
+                    stored.avatar_size = 28;
                 }
                 _ => {}
             }
-            Theme::from(&appearance)
+            (Theme::from(&appearance), Settings::from(&stored))
         })
         .collect();
+    let themes: Vec<Theme> = tweaked.iter().map(|(t, _)| t.clone()).collect();
+    let per_case: Vec<Settings> = tweaked.iter().map(|(_, s)| s.clone()).collect();
 
     // Measure the widest case so every row shares one canvas width.
     let mut widths = Vec::new();
     for (index, (_, status)) in cases.iter().enumerate() {
         let mut scratch = Canvas::new(1, height).expect("scratch");
-        let blocks = view::blocks(status, &themes[index]);
+        let blocks = view::blocks(status, &themes[index], &per_case[index]);
         let mut ctx = Context {
             theme: &themes[index],
             font: &font,
@@ -178,7 +185,7 @@ fn main() {
             themes[index].background,
         );
 
-        let blocks = view::blocks(status, &themes[index]);
+        let blocks = view::blocks(status, &themes[index], &per_case[index]);
         let mut ctx = Context {
             theme: &themes[index],
             font: &font,

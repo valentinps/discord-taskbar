@@ -14,6 +14,7 @@ use crate::ui::block::{Block, BlockId, Content, Ring, Shape, Span};
 use crate::ui::theme::Theme;
 
 use super::icons as glyphs;
+use super::settings::Settings;
 
 /// Clicking here brings the Discord window forward.
 pub const ID_FOCUS: &str = "focus";
@@ -42,10 +43,10 @@ const CHEVRON: &str = "›";
 const NAME_SEPARATOR: &str = "  ·  ";
 
 /// Everything the widget should show for `status`, left to right.
-pub fn blocks(status: &VoiceStatus, theme: &Theme) -> Vec<Block> {
+pub fn blocks(status: &VoiceStatus, theme: &Theme, settings: &Settings) -> Vec<Block> {
     let mut blocks = Vec::new();
 
-    if let Some(icon) = guild_icon(status, theme) {
+    if let Some(icon) = guild_icon(status, theme, settings) {
         blocks.push(icon);
         // Only worth a chevron when there is something on both sides of it.
         if status.channel_name.is_some() {
@@ -56,25 +57,25 @@ pub fn blocks(status: &VoiceStatus, theme: &Theme) -> Vec<Block> {
         }
     }
 
-    if let Some(label) = channel_label(status, theme) {
+    if let Some(label) = channel_label(status, theme, settings) {
         blocks.push(label);
     }
 
-    if let Some(row) = avatar_row(status, theme) {
+    if let Some(row) = avatar_row(status, theme, settings) {
         blocks.push(row);
     }
 
-    if theme.show_divider && !status.participants.is_empty() {
+    if settings.show_divider && !status.participants.is_empty() {
         blocks.push(Block::new(Content::Rule {
             color: theme.divider,
         }));
     }
 
-    if let Some(icons) = self_icons(status, theme) {
+    if let Some(icons) = self_icons(status, theme, settings) {
         blocks.push(icons);
     }
 
-    if theme.show_leave_button && status.is_connected() {
+    if settings.show_leave_button && status.is_connected() {
         blocks.push(
             Block::new(Content::Icon {
                 glyph: glyphs::HANG_UP,
@@ -92,14 +93,14 @@ pub fn blocks(status: &VoiceStatus, theme: &Theme) -> Vec<Block> {
 ///
 /// People recognise servers by icon far more than by name, and an icon costs a
 /// fraction of the width a name does — which matters on a taskbar.
-fn guild_icon(status: &VoiceStatus, theme: &Theme) -> Option<Block> {
-    if !theme.show_guild_icon {
+fn guild_icon(status: &VoiceStatus, theme: &Theme, settings: &Settings) -> Option<Block> {
+    if !settings.show_guild_icon {
         return None;
     }
     let url = status.guild_icon_url.as_ref()?;
     let id = status.guild_id.as_ref()?;
 
-    let size = theme.guild_icon_size;
+    let size = settings.guild_icon_size;
     // Discord's CDN takes a size hint, and asking for a small image saves both
     // bandwidth and decode time.
     let separator = if url.contains('?') { '&' } else { '?' };
@@ -130,14 +131,14 @@ fn guild_icon(status: &VoiceStatus, theme: &Theme) -> Option<Block> {
 /// Channel first deliberately: when the label has to be ellipsised it is the
 /// server name that should lose characters, not the channel you are sitting in
 /// — which is what the first span's priority in `Content::Text` gives us.
-fn channel_label(status: &VoiceStatus, theme: &Theme) -> Option<Block> {
+fn channel_label(status: &VoiceStatus, theme: &Theme, settings: &Settings) -> Option<Block> {
     let channel = status.channel_name.clone()?;
     if channel.is_empty() {
         return None;
     }
 
     let mut spans = vec![Span::new(channel, theme.text)];
-    if theme.show_guild_name {
+    if settings.show_guild_name {
         if let Some(guild) = &status.guild_name {
             spans.push(Span::new(
                 format!("{NAME_SEPARATOR}{guild}"),
@@ -157,16 +158,16 @@ fn channel_label(status: &VoiceStatus, theme: &Theme) -> Option<Block> {
 
 /// Circular avatars, ringed while their owner is talking and badged when they
 /// are muted or deafened.
-fn avatar_row(status: &VoiceStatus, theme: &Theme) -> Option<Block> {
-    let people = status.sorted_participants(theme.sort_by_speaking);
+fn avatar_row(status: &VoiceStatus, theme: &Theme, settings: &Settings) -> Option<Block> {
+    let people = status.sorted_participants(settings.sort_by_speaking);
     if people.is_empty() {
         return None;
     }
 
-    let size = theme.avatar_size;
+    let size = settings.avatar_size;
     let items: Vec<Block> = people
         .into_iter()
-        .take(theme.max_avatars)
+        .take(settings.max_avatars)
         .map(|participant| {
             let badge = (participant.is_deafened() || participant.is_muted()).then(|| {
                 crate::ui::block::Badge {
@@ -190,7 +191,7 @@ fn avatar_row(status: &VoiceStatus, theme: &Theme) -> Option<Block> {
                 } else {
                     1.0
                 },
-                ring: participant.speaking.then(|| Ring::new(theme.speaking)),
+                ring: participant.speaking.then(|| Ring::new(theme.accent)),
                 badge,
                 placeholder: theme.placeholder,
             })
@@ -200,7 +201,7 @@ fn avatar_row(status: &VoiceStatus, theme: &Theme) -> Option<Block> {
 
     Some(Block::new(Content::Cluster {
         items,
-        overlap: theme.avatar_overlap,
+        overlap: settings.avatar_overlap,
     }))
 }
 
@@ -208,8 +209,8 @@ fn avatar_row(status: &VoiceStatus, theme: &Theme) -> Option<Block> {
 ///
 /// A cluster with a negative overlap rather than two separate blocks: these
 /// two belong together and sit closer than the widget's normal spacing.
-fn self_icons(status: &VoiceStatus, theme: &Theme) -> Option<Block> {
-    if !theme.show_self_icons {
+fn self_icons(status: &VoiceStatus, theme: &Theme, settings: &Settings) -> Option<Block> {
+    if !settings.show_self_icons {
         return None;
     }
 
@@ -243,7 +244,7 @@ fn self_icons(status: &VoiceStatus, theme: &Theme) -> Option<Block> {
     // No ids when they are for looking at rather than pressing, which is also
     // what keeps the hand cursor off them.
     let (mut mic, mut ear) = (Block::new(mic), Block::new(ear));
-    if theme.clickable_self_icons {
+    if settings.clickable_self_icons {
         mic = mic.with_id(ID_MUTE);
         ear = ear.with_id(ID_DEAFEN);
     }

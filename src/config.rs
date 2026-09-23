@@ -4,9 +4,11 @@
 //! Fields carry `#[serde(default)]` so adding options later never invalidates
 //! an existing config file.
 
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 
 /// `%APPDATA%\discord-taskbar` — config and OAuth token.
 pub fn config_dir() -> PathBuf {
@@ -42,8 +44,102 @@ impl Credentials {
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Config {
-    pub discord: Credentials,
+    /// The widget's own look. Nothing here is specific to what is being
+    /// shown.
     pub appearance: crate::ui::theme::Appearance,
+    /// One section per integration, keyed by its `id`. Opaque here: only the
+    /// integration knows what its own settings mean, and keeping them as
+    /// `Value` is what lets a new one be added without touching this file.
+    pub integrations: BTreeMap<String, Value>,
+}
+
+impl Config {
+    /// One integration's section, or an empty object if it has none yet.
+    pub fn integration(&self, id: &str) -> Value {
+        self.integrations
+            .get(id)
+            .cloned()
+            .unwrap_or_else(|| Value::Object(Default::default()))
+    }
+}
+
+/// Settings that used to live under `appearance` before integrations had
+/// sections of their own.
+///
+/// Listed rather than detected: `appearance` still has keys of its own, and
+/// moving anything unrecognised would sweep up a typo along with the rest.
+const MOVED_TO_DISCORD: &[&str] = &[
+    "avatar_size",
+    "avatar_overlap",
+    "max_avatars",
+    "sort_by_speaking",
+    "show_guild_name",
+    "show_guild_icon",
+    "guild_icon_size",
+    "show_self_icons",
+    "clickable_self_icons",
+    "show_divider",
+    "show_leave_button",
+    "middle_click",
+    "scroll_volume_step",
+    "volume_curve",
+    "volume_boost_db",
+    "max_volume",
+];
+
+/// Move an older config's Discord settings into `integrations.discord`.
+///
+/// Runs on the raw JSON before it is deserialised, because by then the keys
+/// that moved have already been dropped on the floor by `serde(default)` — a
+/// silent reset of every setting the user had chosen.
+fn migrate(raw: &mut Value) {
+    let Some(root) = raw.as_object_mut() else {
+        return;
+    };
+
+    // Only ever run once: a config that already has the section is current.
+    let already = root
+        .get("integrations")
+        .and_then(Value::as_object)
+        .is_some_and(|m| m.contains_key("discord"));
+    if already {
+        return;
+    }
+
+    let mut discord = serde_json::Map::new();
+
+    // Credentials were a top-level `discord` object of their own.
+    if let Some(Value::Object(creds)) = root.remove("discord") {
+        for (key, value) in creds {
+            discord.insert(key, value);
+        }
+    }
+
+    if let Some(Value::Object(appearance)) = root.get_mut("appearance") {
+        for key in MOVED_TO_DISCORD {
+            if let Some(value) = appearance.remove(*key) {
+                discord.insert((*key).to_string(), value);
+            }
+        }
+    }
+
+    if discord.is_empty() {
+        return;
+    }
+
+    let integrations = root
+        .entry("integrations")
+        .or_insert_with(|| Value::Object(Default::default()));
+    if let Some(map) = integrations.as_object_mut() {
+        map.insert("discord".to_string(), Value::Object(discord));
+    }
+}
+
+/// Parse config text, migrating an older layout on the way through.
+fn parse(text: &str) -> Result<Config, serde_json::Error> {
+    let mut raw: Value = serde_json::from_str(text)?;
+    migrate(&mut raw);
+    serde_json::from_value(raw)
 }
 
 /// Decode config bytes as UTF-8, tolerating a byte-order mark.
@@ -105,7 +201,7 @@ impl Config {
             }
         };
 
-        match serde_json::from_str::<Config>(&text) {
+        match parse(&text) {
             Ok(config) => {
                 // Rewrite so every field is present in the file. Without this,
                 // options that fall back to their default never appear, and an
@@ -146,7 +242,7 @@ impl Config {
             }
         };
 
-        match serde_json::from_str::<Config>(&text) {
+        match parse(&text) {
             Ok(config) => (config, None),
             Err(e) => (
                 Config::default(),

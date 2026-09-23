@@ -27,8 +27,9 @@ fn main() {
 
 fn run() -> Result<(), RpcError> {
     let (config, _) = Config::load_or_create();
+    let creds = discord_taskbar::integration::discord::settings::credentials(&config);
 
-    if !config.discord.is_complete() {
+    if !creds.is_complete() {
         print_setup_instructions();
         return Err(RpcError::Config(
             "client_id / client_secret not configured".to_string(),
@@ -36,7 +37,7 @@ fn run() -> Result<(), RpcError> {
     }
 
     log("connecting to Discord IPC...");
-    let mut client = RpcClient::connect(&config.discord.client_id)?;
+    let mut client = RpcClient::connect(&creds.client_id)?;
 
     let who = client
         .ready_user
@@ -54,7 +55,7 @@ fn run() -> Result<(), RpcError> {
     ));
 
     log("authenticating...");
-    let token = oauth::login(&mut client, &config.discord, || {
+    let token = oauth::login(&mut client, &creds, || {
         log(">>> Discord should now be showing an authorization dialog. Click Authorize. <<<");
     })?;
     log(&format!("authenticated; granted scopes: {}", token.scope));

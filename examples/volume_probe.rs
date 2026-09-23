@@ -36,8 +36,9 @@ fn flag(name: &str) -> Option<String> {
 
 fn run() -> Result<(), RpcError> {
     let (config, _) = Config::load_or_create();
-    let mut client = RpcClient::connect(&config.discord.client_id)?;
-    let token = oauth::login(&mut client, &config.discord, || {
+    let creds = discord_taskbar::integration::discord::settings::credentials(&config);
+    let mut client = RpcClient::connect(&creds.client_id)?;
+    let token = oauth::login(&mut client, &creds, || {
         println!("authorize in Discord...");
     })?;
     let _ = token;

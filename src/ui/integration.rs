@@ -243,6 +243,23 @@ pub trait Integration {
     /// Fold an event into state. Returns whether the widget should redraw.
     fn on_event(&mut self, event: Event, ui: &mut dyn Ui) -> bool;
 
+    /// Adopt this integration's section of the config.
+    ///
+    /// Called before `start`, and again whenever the settings are saved.
+    fn apply_settings(&mut self, _settings: &serde_json::Value) {}
+
+    /// Settings to show below the widget's own, addressed by a dotted path
+    /// within the config — `integrations.<id>.<key>`.
+    fn settings_fields(&self) -> Vec<crate::ui::settings::Field> {
+        Vec::new()
+    }
+
+    /// A note at the top of the settings window, for an integration that has
+    /// to be set up somewhere else first.
+    fn settings_intro(&self) -> Option<crate::ui::settings::Intro> {
+        None
+    }
+
     /// What the widget should show right now, left to right.
     fn blocks(&self, theme: &Theme) -> Vec<Block>;
 

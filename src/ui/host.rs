@@ -783,10 +783,27 @@ impl App {
     /// The window is modeless and lives on this thread, so the widget carries
     /// on working while it is open — and a change can be seen the moment it is
     /// saved rather than after a restart.
+    /// The settings window: the widget's own rows, then the integration's.
     fn open_settings(&mut self) {
         let (config, _) = Config::load_or_create();
+
+        let mut fields = settings::core_fields();
+        let (intro, title) = match &self.integration {
+            Some(integration) => {
+                fields.extend(integration.settings_fields());
+                (
+                    integration.settings_intro(),
+                    format!("{} Taskbar — Settings", integration.name()),
+                )
+            }
+            None => (None, "Taskbar — Settings".to_string()),
+        };
+
         settings::open(
             &config,
+            fields,
+            intro,
+            &title,
             Box::new(|edited| {
                 // Runs on the UI thread from the settings window's handler,
                 // where the app is not already borrowed.
@@ -803,6 +820,12 @@ impl App {
         }
 
         self.theme = Theme::from(&config.appearance);
+
+        // The integration's own section may have moved too.
+        if let Some(integration) = &mut self.integration {
+            let own = config.integration(integration.id());
+            integration.apply_settings(&own);
+        }
 
         // Metrics and colours may all have moved.
         self.rebuild_fonts();
