@@ -33,7 +33,7 @@ use windows::Win32::UI::Shell::{
     KF_FLAG_DEFAULT,
 };
 
-use discord_taskbar::ui::controls::wide;
+use taskbar_widget::ui::controls::wide;
 
 /// The application binary, baked in at build time by `make-installer.sh`.
 ///
@@ -182,8 +182,8 @@ pub fn uninstall(directory: &Path, purge: bool) -> Report {
     report.step("Removed the Installed apps entry", delete_key(UNINSTALL_KEY));
 
     if purge {
-        let config = discord_taskbar::config::config_dir();
-        let cache = discord_taskbar::config::cache_dir();
+        let config = taskbar_widget::config::config_dir();
+        let cache = taskbar_widget::config::cache_dir();
         let _ = std::fs::remove_dir_all(config);
         // `cache_dir()` is a subfolder; take its parent so nothing is left.
         let _ = std::fs::remove_dir_all(cache.parent().unwrap_or(&cache));

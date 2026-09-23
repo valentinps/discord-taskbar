@@ -1,0 +1,11 @@
+[package]
+name = "taskbar-widget"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+description = "A widget that lives in the Windows taskbar"
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+windows.workspace = true

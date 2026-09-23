@@ -1,28 +1,36 @@
-[workspace]
+# A taskbar widget, and the things it can show.
+#
+# `taskbar-widget` is the shell: windows, drawing, menus, settings. It knows
+# nothing about Discord. `discord-integration` is one source of things to
+# show, and `app` picks it and starts the widget. Adding another source means
+# adding a crate here, not editing the widget — and the crate boundary is what
+# makes that a promise the compiler keeps rather than a convention.
+#
 # The installer is a second binary that embeds the first, so it must build
 # after it. `make-installer.sh` sequences the two.
-members = ["installer"]
+[workspace]
+resolver = "2"
+members = [
+    "crates/taskbar-widget",
+    "crates/discord-integration",
+    "crates/app",
+    "installer",
+]
 
-[package]
-name = "discord-taskbar"
+[workspace.package]
 version = "0.1.0"
 edition = "2021"
-description = "Discord voice status in the Windows taskbar"
 publish = false
 
-[lib]
-name = "discord_taskbar"
-path = "src/lib.rs"
-
-[[bin]]
-name = "discord-taskbar"
-path = "src/main.rs"
-
-[dependencies]
+# One list, so the crates cannot drift apart on features and the dependency is
+# unified into a single build.
+[workspace.dependencies]
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+taskbar-widget = { path = "crates/taskbar-widget" }
+discord-integration = { path = "crates/discord-integration" }
 
-[dependencies.windows]
+[workspace.dependencies.windows]
 version = "0.62"
 features = [
     "Win32_Foundation",
@@ -35,9 +43,12 @@ features = [
     "Win32_System_DataExchange",
     "Win32_System_Memory",
     "Win32_Security",
+    "Win32_System_Registry",
+    "Win32_System_Diagnostics_ToolHelp",
     "Win32_UI_WindowsAndMessaging",
     "Win32_UI_HiDpi",
     "Win32_UI_Shell",
+    "Win32_UI_Shell_Common",
     "Win32_UI_Input_KeyboardAndMouse",
     "Win32_UI_Controls",
     "Win32_Graphics_Gdi",

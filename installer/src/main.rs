@@ -24,7 +24,7 @@ use windows::core::PCWSTR;
 use windows::Win32::UI::Shell::ShellExecuteW;
 use windows::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
 
-use discord_taskbar::ui::controls::wide;
+use taskbar_widget::ui::controls::wide;
 
 fn main() {
     let arguments: Vec<String> = std::env::args().skip(1).collect();

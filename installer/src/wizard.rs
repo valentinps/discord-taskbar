@@ -24,8 +24,8 @@ use windows::Win32::UI::HiDpi::{
 use windows::Win32::UI::Shell::{SHBrowseForFolderW, SHGetPathFromIDListW, ShellExecuteW, BROWSEINFOW, BIF_NEWDIALOGSTYLE, BIF_RETURNONLYFSDIRS};
 use windows::Win32::UI::WindowsAndMessaging::*;
 
-use discord_taskbar::config::Config;
-use discord_taskbar::ui::controls::{
+use taskbar_widget::config::Config;
+use taskbar_widget::ui::controls::{
     button, checkbox, child, edit, is_checked, set_checked, static_text, text_of, ui_font, wide,
     Place,
 };
@@ -117,6 +117,9 @@ pub fn run(mode: Mode) {
     // An install that is really an upgrade should show what is already
     // configured rather than making the user find their client id again.
     let (existing, _) = Config::load_or_create();
+    // Prefill from whatever is already set up, so a repair keeps the
+    // credentials the user pasted last time.
+    let creds = discord_integration::settings::credentials(&existing);
 
     let uninstalling = matches!(mode, Mode::Uninstall(_));
     let caption = if uninstalling {
@@ -162,8 +165,8 @@ pub fn run(mode: Mode) {
             bold: ui_font(scale_by(dpi, 9), true),
             heading: ui_font(scale_by(dpi, 14), true),
             body: Vec::new(),
-            client_id: existing.discord.client_id.clone(),
-            client_secret: existing.discord.client_secret.clone(),
+            client_id: creds.client_id.clone(),
+            client_secret: creds.client_secret.clone(),
             directory: actions::default_directory().to_string_lossy().into_owned(),
             run_at_signin: true,
             start_menu: true,
@@ -419,8 +422,13 @@ fn perform() {
             // leave a config pointing at nothing.
             if !report.failed && !(wizard.client_id.is_empty() && wizard.client_secret.is_empty()) {
                 let (mut config, _) = Config::load_or_create();
-                config.discord.client_id = wizard.client_id.clone();
-                config.discord.client_secret = wizard.client_secret.clone();
+                discord_integration::settings::set_credentials(
+                    &mut config,
+                    &taskbar_widget::config::Credentials {
+                        client_id: wizard.client_id.clone(),
+                        client_secret: wizard.client_secret.clone(),
+                    },
+                );
                 report.step(
                     "Saved your Discord application details",
                     config.save().map_err(|e| e.to_string()),

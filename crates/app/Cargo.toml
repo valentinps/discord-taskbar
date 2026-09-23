@@ -1,0 +1,17 @@
+# The only crate that names an integration. Everything it does beyond picking
+# one would serve any other unchanged.
+[package]
+name = "discord-taskbar"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+description = "Discord voice status in the Windows taskbar"
+
+[[bin]]
+name = "discord-taskbar"
+path = "src/main.rs"
+
+[dependencies]
+taskbar-widget.workspace = true
+discord-integration.workspace = true
+windows.workspace = true

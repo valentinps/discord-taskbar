@@ -3,11 +3,21 @@
 version = 4
 
 [[package]]
-name = "discord-taskbar"
+name = "discord-integration"
 version = "0.1.0"
 dependencies = [
  "serde",
  "serde_json",
+ "taskbar-widget",
+ "windows",
+]
+
+[[package]]
+name = "discord-taskbar"
+version = "0.1.0"
+dependencies = [
+ "discord-integration",
+ "taskbar-widget",
  "windows",
 ]
 
@@ -15,7 +25,8 @@ dependencies = [
 name = "discord-taskbar-installer"
 version = "0.1.0"
 dependencies = [
- "discord-taskbar",
+ "discord-integration",
+ "taskbar-widget",
  "windows",
 ]
 
@@ -112,6 +123,15 @@ dependencies = [
  "proc-macro2",
  "quote",
  "unicode-ident",
+]
+
+[[package]]
+name = "taskbar-widget"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "windows",
 ]
 
 [[package]]

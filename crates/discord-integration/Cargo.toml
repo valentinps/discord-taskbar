@@ -1,0 +1,15 @@
+[package]
+name = "discord-integration"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+description = "Discord voice status, as something the taskbar widget can show"
+
+[lib]
+name = "discord_integration"
+
+[dependencies]
+taskbar-widget.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+windows.workspace = true
