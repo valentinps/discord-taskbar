@@ -17,8 +17,7 @@ use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, WPARAM};
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::WindowsAndMessaging::*;
 
-use crate::assets::images::ImageCache;
-use crate::model::Participant;
+use crate::assets::images::{ImageCache, ImageRef};
 
 use super::render::{Canvas, Color, Font};
 use super::theme::Theme;
@@ -141,8 +140,8 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM)
 pub struct VolumeView<'a> {
     pub name: &'a str,
     pub volume: f32,
-    /// For the avatar; `None` while the picture is still downloading.
-    pub participant: Option<&'a Participant>,
+    /// Shown beside the name; `None` for a readout with no picture.
+    pub image: Option<ImageRef>,
     pub theme: &'a Theme,
     pub font: &'a Font,
     pub images: &'a mut ImageCache,
@@ -190,9 +189,9 @@ pub fn draw_volume(canvas: &mut Canvas, view: &mut VolumeView) -> Option<(i32, i
 
     let centre_y = height / 2;
 
-    if let Some(participant) = view.participant {
+    if let Some(image) = view.image.clone() {
         let cx = padding as f32 + avatar as f32 / 2.0;
-        match view.images.avatar(participant, avatar as u32) {
+        match view.images.image(&image, avatar as u32) {
             Some(bitmap) => {
                 let bitmap = bitmap.clone();
                 canvas.draw_circular_bitmap(&bitmap, cx, centre_y as f32, avatar as f32, 1.0);

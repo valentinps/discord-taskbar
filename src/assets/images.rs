@@ -19,14 +19,37 @@ use windows::Win32::System::Com::{
 
 use crate::config::cache_dir;
 use crate::http;
-use crate::model::Participant;
 use crate::ui::render::Bitmap;
 use crate::ui::Notifier;
 
-pub const CDN_HOST: &str = "cdn.discordapp.com";
-
 /// Fetch at twice the drawn size so the circular downscale stays sharp.
-const OVERSAMPLE: u32 = 2;
+///
+/// Public because the URL is built by whoever asks for the image: a source
+/// that takes a size hint wants it expressed in fetched pixels, not drawn
+/// ones.
+pub const OVERSAMPLE: u32 = 2;
+
+/// A picture to draw, as a cache key and where to get it.
+///
+/// The key identifies the *content* and must be stable across restarts and
+/// independent of size — it is used as a filename in the disk cache, and the
+/// drawn size is folded in separately. The URL is absolute and already
+/// carries whatever size hint its source understands, because only the
+/// integration knows what its CDN accepts.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ImageRef {
+    pub key: String,
+    pub url: String,
+}
+
+impl ImageRef {
+    pub fn new(key: impl Into<String>, url: impl Into<String>) -> Self {
+        ImageRef {
+            key: key.into(),
+            url: url.into(),
+        }
+    }
+}
 
 struct Request {
     key: String,
@@ -89,20 +112,14 @@ impl ImageCache {
         None
     }
 
-    pub fn avatar(&mut self, participant: &Participant, size: u32) -> Option<&Bitmap> {
-        let key = participant.avatar_key();
-        let path = participant.avatar_path(size * OVERSAMPLE);
-        self.get(&key, CDN_HOST, &path, size)
-    }
-
-    /// Fetch by absolute URL, as returned by Discord's `GET_GUILD`.
-    pub fn from_url(&mut self, key: &str, url: &str, size: u32) -> Option<&Bitmap> {
-        let (host, path) = split_url(url)?;
-        // Discord's CDN honours a size query, and asking for a small image
-        // saves both bandwidth and decode time.
-        let separator = if path.contains('?') { '&' } else { '?' };
-        let sized = format!("{path}{separator}size={}", (size * OVERSAMPLE).next_power_of_two());
-        self.get(key, &host, &sized, size)
+    /// Look up an image by reference, queueing a fetch if it is not here yet.
+    ///
+    /// `size` is the size it will be *drawn* at, which decides the decode
+    /// target and is folded into the cache key. What gets fetched is whatever
+    /// the reference's URL asks for.
+    pub fn image(&mut self, image: &ImageRef, size: u32) -> Option<&Bitmap> {
+        let (host, path) = split_url(&image.url)?;
+        self.get(&image.key, &host, &path, size)
     }
 
     /// Collect finished downloads. Returns true if anything new arrived, which

@@ -4,3 +4,6 @@
 //! pipe and renders it as blocks the widget draws.
 
 pub mod icons;
+
+/// Where Discord serves avatars and server icons.
+pub const CDN_HOST: &str = "cdn.discordapp.com";

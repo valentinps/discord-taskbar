@@ -5,6 +5,9 @@
 
 use std::sync::Arc;
 
+use crate::assets::images::{ImageRef, OVERSAMPLE};
+use crate::integration::discord::CDN_HOST;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct SelfState {
     pub mute: bool,
@@ -76,6 +79,20 @@ impl Participant {
     /// Whether this person cannot hear.
     pub fn is_deafened(&self) -> bool {
         self.self_deaf || self.server_deaf
+    }
+
+    /// This person's avatar, ready to hand to the image cache.
+    ///
+    /// `size` is the size it will be drawn at; the fetch asks for more so the
+    /// circular downscale stays sharp.
+    pub fn avatar_ref(&self, size: u32) -> ImageRef {
+        ImageRef::new(
+            self.avatar_key(),
+            format!(
+                "https://{CDN_HOST}{}",
+                self.avatar_path(size * OVERSAMPLE)
+            ),
+        )
     }
 
     /// CDN path for this user's avatar at `size` px, or the shared default.

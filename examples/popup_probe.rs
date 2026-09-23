@@ -39,7 +39,7 @@ fn main() {
         let mut view = VolumeView {
             name: &participant.display_name,
             volume: 100.0,
-            participant: Some(&participant),
+            image: Some(participant.avatar_ref(theme.avatar_size as u32)),
             theme: &theme,
             font: &font,
             images: &mut images,
@@ -62,7 +62,7 @@ fn main() {
         let mut view = VolumeView {
             name: "Cleo",
             volume: *level,
-            participant: Some(&participant),
+            image: Some(participant.avatar_ref(theme.avatar_size as u32)),
             theme: &theme,
             font: &font,
             images: &mut images,
@@ -165,7 +165,7 @@ fn live() {
         let mut view = VolumeView {
             name: "Cleo",
             volume,
-            participant: Some(&participant),
+            image: Some(participant.avatar_ref(theme.avatar_size as u32)),
             theme: &theme,
             font: &font,
             images: &mut images,

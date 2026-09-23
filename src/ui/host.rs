@@ -725,7 +725,9 @@ impl App {
         let mut view = popup::VolumeView {
             name: &name,
             volume,
-            participant: participant.as_ref(),
+            image: participant
+                .as_ref()
+                .map(|p| p.avatar_ref(self.theme.avatar_size as u32)),
             theme: &self.theme,
             font: &font,
             images: &mut self.images,
@@ -846,6 +848,7 @@ impl App {
             let items = vec![
                 menu::Item::Header {
                     name: participant.display_name.clone(),
+                    image: Some(participant.avatar_ref(self.theme.avatar_size as u32)),
                 },
                 menu::Item::Separator,
                 menu::Item::Action {
@@ -915,7 +918,6 @@ impl App {
                     font: &font,
                     icon_fonts: &mut self.icon_fonts,
                     images: &mut self.images,
-                    participant: Some(&participant),
                     dpi,
                     on_volume: Some(&apply),
                 };

@@ -20,8 +20,7 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{
 use windows::Win32::UI::WindowsAndMessaging::*;
 
 use crate::assets::icons::{Glyph, IconFonts};
-use crate::assets::images::ImageCache;
-use crate::model::Participant;
+use crate::assets::images::{ImageCache, ImageRef};
 
 use super::render::{Canvas, Color, Font};
 use super::theme::Theme;
@@ -33,8 +32,11 @@ const ASSET_TIMER: usize = 1;
 
 /// One row.
 pub enum Item {
-    /// Avatar and name, not selectable.
-    Header { name: String },
+    /// A picture and a name, not selectable.
+    Header {
+        name: String,
+        image: Option<ImageRef>,
+    },
     Separator,
     Action {
         id: usize,
@@ -76,7 +78,6 @@ pub struct Style<'a> {
     pub font: &'a Font,
     pub icon_fonts: &'a mut IconFonts,
     pub images: &'a mut ImageCache,
-    pub participant: Option<&'a Participant>,
     pub dpi: u32,
     /// Applies a volume as the bar is dragged, so the change is audible while
     /// adjusting rather than only once the menu closes.
@@ -193,12 +194,12 @@ fn render(
         }
 
         match item {
-            Item::Header { name } => {
+            Item::Header { name, image } => {
                 let cx = inner_left as f32 + m.avatar as f32 / 2.0;
                 let cy = (y + h / 2) as f32;
 
-                if let Some(participant) = style.participant {
-                    match style.images.avatar(participant, m.avatar as u32) {
+                if let Some(image) = image {
+                    match style.images.image(image, m.avatar as u32) {
                         Some(bitmap) => {
                             let bitmap = bitmap.clone();
                             canvas.draw_circular_bitmap(&bitmap, cx, cy, m.avatar as f32, 1.0);
@@ -376,14 +377,25 @@ fn render(
     Some(Layout { rows, volume_bar })
 }
 
-/// The volume scale in force for whoever this menu is about.
-fn ceiling(style: &Style) -> f32 {
-    // Everything in this module is in the numbers the user sees, so the
-    // participant's stored amplitude has to be converted before being
-    // compared with them.
-    let current = style
-        .participant
-        .map(|p| style.theme.shown_volume(p.volume))
+/// The header's picture, if it has one.
+fn header_image(items: &[Item]) -> Option<ImageRef> {
+    items.iter().find_map(|item| match item {
+        Item::Header { image, .. } => image.clone(),
+        _ => None,
+    })
+}
+
+/// The volume scale in force for this menu.
+///
+/// Taken from the bar's own value rather than from anything outside the item
+/// list: everything in this module is in the numbers the user sees.
+fn ceiling(style: &Style, items: &[Item]) -> f32 {
+    let current = items
+        .iter()
+        .find_map(|item| match item {
+            Item::Volume { value } => Some(*value),
+            _ => None,
+        })
         .unwrap_or(0.0);
     style.theme.volume_ceiling(current)
 }
@@ -450,11 +462,11 @@ pub fn show(
         return Outcome::default();
     }
 
-    // Kick the avatar fetch off before the first draw, so it has the whole
+    // Kick the header fetch off before the first draw, so it has the whole
     // window-creation round trip to arrive in.
-    if let Some(participant) = style.participant {
+    if let Some(image) = header_image(items) {
         let size = metrics(style).avatar as u32;
-        style.images.avatar(participant, size);
+        style.images.image(&image, size);
     }
 
     let Some(mut canvas) = Canvas::new(1, 1) else {
@@ -634,7 +646,7 @@ fn run_loop(
                     // what makes reaching either end of the scale possible.
                     if volume.dragging.is_some() {
                         if let Some(bar) = layout.volume_bar {
-                            volume.set(style, volume_at(local.x, bar, ceiling(style)), true);
+                            volume.set(style, volume_at(local.x, bar, ceiling(style, items)), true);
                             repaint(canvas, style, hovered, &volume, &mut layout);
                         }
                         continue;
@@ -669,7 +681,7 @@ fn run_loop(
                     // so the press itself is the first adjustment.
                     if message.message == WM_LBUTTONDOWN && row_at(local) == volume_row {
                         if let Some(bar) = layout.volume_bar {
-                            volume.set(style, volume_at(local.x, bar, ceiling(style)), true);
+                            volume.set(style, volume_at(local.x, bar, ceiling(style, items)), true);
                             repaint(canvas, style, hovered, &volume, &mut layout);
                         }
                     }

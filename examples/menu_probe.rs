@@ -28,7 +28,7 @@ fn main() {
 
     // Let the avatar arrive before the menu is drawn.
     for _ in 0..30 {
-        images.avatar(&participant, 26);
+        images.image(&participant.avatar_ref(26), 26);
         if images.collect() {
             break;
         }
@@ -38,6 +38,7 @@ fn main() {
     let items = vec![
         Item::Header {
             name: participant.display_name.clone(),
+            image: Some(participant.avatar_ref(theme.avatar_size as u32)),
         },
         Item::Separator,
         Item::Action {
@@ -85,7 +86,6 @@ fn main() {
         font: &font,
         icon_fonts: &mut icon_fonts,
         images: &mut images,
-        participant: Some(&participant),
         dpi: bar.dpi,
         on_volume: Some(&applied),
     };

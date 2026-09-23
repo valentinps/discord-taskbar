@@ -9,7 +9,7 @@ use windows::Win32::Foundation::{POINT, RECT};
 
 use crate::assets::icons::{self, IconFonts};
 use crate::integration::discord::icons as glyphs;
-use crate::assets::images::ImageCache;
+use crate::assets::images::{ImageCache, ImageRef, OVERSAMPLE};
 use crate::model::VoiceStatus;
 
 use super::render::{Canvas, Color, Font};
@@ -111,7 +111,16 @@ impl Element for GuildIcon {
         let centre_x = bounds.left as f32 + size as f32 / 2.0;
         let centre_y = (bounds.top + bounds.bottom) as f32 / 2.0;
 
-        match ctx.images.from_url(&format!("guild_{id}"), &url, size as u32) {
+        let separator = if url.contains('?') { '&' } else { '?' };
+        let image = ImageRef::new(
+            format!("guild_{id}"),
+            format!(
+                "{url}{separator}size={}",
+                (size as u32 * OVERSAMPLE).next_power_of_two()
+            ),
+        );
+
+        match ctx.images.image(&image, size as u32) {
             Some(bitmap) => {
                 let bitmap = bitmap.clone();
                 canvas.draw_circular_bitmap(&bitmap, centre_x, centre_y, size as f32, 1.0);
@@ -309,7 +318,10 @@ impl Element for AvatarRow {
                 1.0
             };
 
-            match ctx.images.avatar(participant, size as u32) {
+            match ctx
+                .images
+                .image(&participant.avatar_ref(size as u32), size as u32)
+            {
                 Some(bitmap) => {
                     let bitmap = bitmap.clone();
                     canvas.draw_circular_bitmap(&bitmap, centre_x, centre_y, size as f32, opacity);
