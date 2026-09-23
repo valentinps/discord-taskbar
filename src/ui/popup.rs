@@ -68,7 +68,7 @@ pub fn create() -> Option<HWND> {
             // and tool-window so it stays out of Alt-Tab.
             WS_EX_LAYERED | WS_EX_TOPMOST | WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW,
             CLASS_NAME,
-            w!("Discord Taskbar Popup"),
+            w!("Taskbar widget readout"),
             WS_POPUP,
             0,
             0,

@@ -1,9 +1,11 @@
 //! `--doctor`: find out why nothing is showing.
 //!
-//! The widget is deliberately invisible when there is nothing to say — not in
-//! a call, Discord not running, no credentials yet. That is right in normal
-//! use and useless when something is wrong, because every failure looks
-//! identical from the outside: an empty taskbar.
+//! The widget is deliberately invisible when its integration has nothing to
+//! say. That is right in normal use and useless when something is wrong,
+//! because every failure looks identical from the outside: an empty taskbar.
+//!
+//! The widget's own checks are here; the integration contributes its section
+//! as a [`Report`].
 //!
 //! This runs every check the app makes at startup, in order, and prints what
 //! it found. It changes nothing: no OAuth prompt, no config rewrite, no
@@ -18,9 +20,7 @@ use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::HiDpi::GetDpiForWindow;
 use windows::Win32::UI::WindowsAndMessaging::*;
 
-use crate::config::{cache_dir, config_dir, config_path, Config, Credentials};
-use crate::integration::discord::provider::rpc::oauth;
-use crate::integration::discord::provider::rpc::{RpcClient, RpcError};
+use crate::config::{cache_dir, config_dir, config_path, Config};
 use crate::ui::controls::{button, child, wide, Place};
 use crate::ui::taskbar;
 
@@ -34,40 +34,83 @@ const ID_LOGIN: usize = 5;
 
 /// The sign-in test finished; `wparam` carries a boxed `String`.
 const WM_APP_RESULT: u32 = WM_APP + 1;
-/// The Discord section is ready; `wparam` carries a boxed `String`.
+/// The integration's section is ready; `wparam` carries a boxed `String`.
 const WM_APP_DISCOVERED: u32 = WM_APP + 2;
 
 /// Marks used down the left of the report, so it skims.
-const OK: &str = "  ok  ";
-const BAD: &str = " FAIL ";
-const WARN: &str = " warn ";
-const INFO: &str = "      ";
+/// Status markers. Public so an integration's lines line up with these.
+pub const OK: &str = "  ok  ";
+pub const BAD: &str = " FAIL ";
+pub const WARN: &str = " warn ";
+pub const INFO: &str = "      ";
 
-/// Gather the local checks, show them, then fill in the Discord ones.
-pub fn run() {
-    show(&gather_local());
+/// Gather the local checks, show them, then fill in the integration's.
+/// A button in the diagnostics window that tries something for real.
+///
+/// The report can only describe what is already written down. Some failures —
+/// a correctly-created but misconfigured application, say — only show up when
+/// you actually attempt the thing, which is what this is for.
+pub struct Action {
+    pub label: String,
+    /// Printed the moment it is pressed, before the slow part starts.
+    pub announcement: String,
+    /// The slow part, run on a worker thread. A plain function pointer, so
+    /// nothing here has to be `Send`.
+    pub run: fn() -> String,
+}
+
+/// What an integration contributes to the report.
+pub struct Report {
+    /// Heading for the integration's own section, e.g. `DISCORD`.
+    pub heading: String,
+    /// Checks that can be answered from files and the local machine, shown
+    /// under the widget's own settings section.
+    pub local: String,
+    /// A check that talks to the thing itself.
+    ///
+    /// Run on a worker thread and shown as "checking..." until it lands: a
+    /// tool whose whole job is to explain a stuck program must never be the
+    /// thing that hangs, and doing this up front would have meant no window
+    /// at all while it waited.
+    pub probe: fn() -> String,
+    pub action: Option<Action>,
+}
+
+impl Default for Report {
+    fn default() -> Self {
+        Report {
+            heading: "INTEGRATION".to_string(),
+            local: String::new(),
+            probe: || String::new(),
+            action: None,
+        }
+    }
+}
+
+pub fn run(report: Report) {
+    show(report);
 }
 
 /// Everything that can be answered without talking to anything.
 ///
 /// Deliberately one long string rather than a structure: it exists to be read
 /// by a person and pasted into a chat window.
-///
-/// The Discord section is *not* here. Reaching Discord means a named-pipe
-/// connect and a handshake that waits for a reply, and a tool whose whole job
-/// is to explain a stuck program must never be the thing that hangs. Doing it
-/// up front would have meant no window at all while it waited.
-pub fn gather_local() -> String {
+pub fn gather_local(report: &Report) -> String {
     let mut out = String::new();
-    let _ = writeln!(out, "Discord Taskbar {} — diagnostics", env!("CARGO_PKG_VERSION"));
+    let _ = writeln!(
+        out,
+        "Taskbar widget {} — diagnostics",
+        env!("CARGO_PKG_VERSION")
+    );
     let _ = writeln!(out, "{}", "=".repeat(62));
     let _ = writeln!(out);
 
     section_app(&mut out);
-    section_config(&mut out);
+    section_config(&mut out, report);
     section_taskbar(&mut out);
 
-    let _ = writeln!(out, "DISCORD");
+    // Filled in by the worker thread; see `Report::probe`.
+    let _ = writeln!(out, "{}", report.heading);
     let _ = writeln!(out, "{INFO}checking...");
     out
 }
@@ -82,7 +125,7 @@ fn to_crlf(text: &str) -> String {
     text.replace("\r\n", "\n").replace('\n', "\r\n")
 }
 
-/// The closing note, appended once the Discord section has landed.
+/// The closing note, appended once the integration's section has landed.
 fn footer() -> String {
     format!(
         "\r\n{}\r\nSend this whole report to whoever is helping you. It contains no\r\n\
@@ -170,7 +213,7 @@ fn app_is_running() -> bool {
     }
 }
 
-fn section_config(out: &mut String) {
+fn section_config(out: &mut String, report: &Report) {
     let _ = writeln!(out, "SETTINGS");
     let _ = writeln!(out, "{INFO}folder         {}", config_dir().display());
 
@@ -191,167 +234,11 @@ fn section_config(out: &mut String) {
         }
     }
 
-    let creds = crate::integration::discord::settings::credentials(&config);
-    let id = creds.client_id.trim();
-    if id.is_empty() {
-        let _ = writeln!(
-            out,
-            "{BAD}client id      not set — open Settings and paste it in"
-        );
-    } else if !id.chars().all(|c| c.is_ascii_digit()) {
-        let _ = writeln!(
-            out,
-            "{BAD}client id      \"{id}\" is not all digits; that is not a client id"
-        );
-    } else if id.len() < 17 || id.len() > 20 {
-        let _ = writeln!(
-            out,
-            "{WARN}client id      {id} ({} digits, expected 17-20)",
-            id.len()
-        );
-    } else {
-        let _ = writeln!(out, "{OK}client id      {id}");
-    }
+    // Whatever the integration can say about its own settings.
+    let _ = config;
+    out.push_str(&report.local);
 
-    // Never printed, only measured: the report is meant to be pasted around.
-    let creds = crate::integration::discord::settings::credentials(&config);
-    let secret = creds.client_secret.trim();
-    if secret.is_empty() {
-        let _ = writeln!(
-            out,
-            "{BAD}client secret  not set — open Settings and paste it in"
-        );
-    } else if secret.len() < 30 {
-        let _ = writeln!(
-            out,
-            "{WARN}client secret  set, but only {} characters — is it truncated?",
-            secret.len()
-        );
-    } else {
-        let _ = writeln!(out, "{OK}client secret  set ({} characters)", secret.len());
-    }
-
-    let token = oauth::token_path();
-    match oauth::load_token() {
-        None if token.exists() => {
-            let _ = writeln!(out, "{WARN}token.json     present but unreadable");
-        }
-        None => {
-            let _ = writeln!(
-                out,
-                "{INFO}token.json     not yet written — normal until you approve\n\
-                 {INFO}               the prompt in Discord for the first time"
-            );
-        }
-        Some(stored) if stored.is_usable() => {
-            let _ = writeln!(out, "{OK}token.json     valid, no prompt needed");
-        }
-        Some(stored) if !stored.covers_required_scopes() => {
-            let _ = writeln!(
-                out,
-                "{WARN}token.json     missing a scope; Discord will prompt again"
-            );
-            let _ = writeln!(out, "{INFO}               has:  {}", stored.scope);
-            let _ = writeln!(out, "{INFO}               needs: {}", oauth::SCOPES.join(" "));
-        }
-        Some(stored) => {
-            let _ = writeln!(
-                out,
-                "{INFO}token.json     expired{}",
-                if stored.can_refresh() {
-                    ", will refresh by itself"
-                } else {
-                    "; Discord will prompt again"
-                }
-            );
-        }
-    }
-
-    let _ = writeln!(out, "{INFO}avatar cache   {}", cache_dir().display());
-    let _ = writeln!(out);
-}
-
-fn section_discord(out: &mut String) {
-    // Which pipes answer tells us whether the desktop client is up, without
-    // needing to enumerate processes.
-    let pipes: Vec<u32> = (0..10)
-        .filter(|index| {
-            std::fs::metadata(format!(r"\\.\pipe\discord-ipc-{index}")).is_ok()
-        })
-        .collect();
-
-    if pipes.is_empty() {
-        let _ = writeln!(
-            out,
-            "{BAD}ipc pipe       none found — the Discord desktop app is not"
-        );
-        let _ = writeln!(
-            out,
-            "{INFO}               running. The browser version cannot be read."
-        );
-        let _ = writeln!(out);
-        return;
-    }
-
-    let _ = writeln!(
-        out,
-        "{OK}ipc pipe       discord-ipc-{} answering",
-        pipes
-            .iter()
-            .map(u32::to_string)
-            .collect::<Vec<_>>()
-            .join(", discord-ipc-")
-    );
-
-    let (config, _) = Config::load();
-    let creds = crate::integration::discord::settings::credentials(&config);
-    let id = creds.client_id.trim();
-    if id.is_empty() {
-        let _ = writeln!(
-            out,
-            "{INFO}handshake      skipped, no client id to try it with"
-        );
-        let _ = writeln!(out);
-        return;
-    }
-
-    // A handshake is enough to prove the client id: it is rejected before any
-    // authorisation happens, so this never pops a prompt.
-    match RpcClient::connect(id) {
-        Ok(client) => {
-            let _ = writeln!(out, "{OK}handshake      accepted, client id is valid");
-            match client
-                .ready_user
-                .as_ref()
-                .and_then(|user| user.get("username").and_then(|v| v.as_str()))
-            {
-                Some(name) => {
-                    let _ = writeln!(out, "{OK}signed in as   {name}");
-                    let _ = writeln!(
-                        out,
-                        "{INFO}               this account must be the one that OWNS the\n\
-                         {INFO}               Discord application above, or authorisation\n\
-                         {INFO}               will be refused"
-                    );
-                }
-                None => {
-                    let _ = writeln!(out, "{WARN}signed in as   unknown — no user in the READY frame");
-                }
-            }
-        }
-        Err(error) => {
-            let _ = writeln!(out, "{BAD}handshake      rejected: {error}");
-            let text = error.to_string();
-            if text.contains("4000") || text.to_lowercase().contains("client id") {
-                let _ = writeln!(
-                    out,
-                    "{INFO}               Discord does not recognise this client id.\n\
-                     {INFO}               Check it against the OAuth2 page of YOUR OWN\n\
-                     {INFO}               application — somebody else's will not work."
-                );
-            }
-        }
-    }
+    let _ = writeln!(out, "{INFO}image cache    {}", cache_dir().display());
     let _ = writeln!(out);
 }
 
@@ -427,15 +314,17 @@ fn present(rect: Option<RECT>) -> &'static str {
 // ---------------------------------------------------------------- window ---
 
 struct Doctor {
-    report: String,
+    text: String,
     font: HFONT,
+    /// Kept so the button can still run its action after the window is up.
+    report: Report,
 }
 
 thread_local! {
     static DOCTOR: std::cell::RefCell<Option<Doctor>> = const { std::cell::RefCell::new(None) };
 }
 
-fn show(report: &str) {
+fn show(report: Report) {
     if !register_class() {
         return;
     }
@@ -448,7 +337,7 @@ fn show(report: &str) {
         let Ok(hwnd) = CreateWindowExW(
             WS_EX_APPWINDOW,
             CLASS_NAME,
-            w!("Discord Taskbar — Diagnostics"),
+            w!("Taskbar widget — Diagnostics"),
             WS_OVERLAPPEDWINDOW,
             CW_USEDEFAULT,
             CW_USEDEFAULT,
@@ -488,20 +377,25 @@ fn show(report: &str) {
             SWP_NOMOVE | SWP_NOZORDER,
         );
 
+        let text = gather_local(&report);
+        let probe = report.probe;
+        let action_label = report.action.as_ref().map(|a| a.label.clone());
+
         DOCTOR.with(|cell| {
             *cell.borrow_mut() = Some(Doctor {
-                report: report.to_string(),
+                text: text.clone(),
                 font,
+                report,
             })
         });
 
-        build(hwnd, report, &scale, font);
+        build(hwnd, &text, action_label.as_deref(), &scale, font);
 
         let _ = ShowWindow(hwnd, SW_SHOW);
         let _ = SetForegroundWindow(hwnd);
 
-        // Now that there is something on screen, go and ask Discord.
-        probe_discord(hwnd);
+        // Now that there is something on screen, go and ask.
+        start_probe(hwnd, probe);
 
         let mut message = MSG::default();
         while GetMessageW(&mut message, None, 0, 0).into() {
@@ -514,7 +408,13 @@ fn show(report: &str) {
     }
 }
 
-fn build(hwnd: HWND, report: &str, scale: &impl Fn(i32) -> i32, font: HFONT) {
+fn build(
+    hwnd: HWND,
+    report: &str,
+    action: Option<&str>,
+    scale: &impl Fn(i32) -> i32,
+    font: HFONT,
+) {
     let margin = scale(12);
     let button_h = scale(30);
     let button_w = scale(120);
@@ -548,15 +448,20 @@ fn build(hwnd: HWND, report: &str, scale: &impl Fn(i32) -> i32, font: HFONT) {
     let y = height - button_h - margin;
     let gap = scale(8);
     let mut right = width - margin;
-    for (label, id, w) in [
-        ("Close", ID_CLOSE, button_w),
-        ("Save to file\u{2026}", ID_SAVE, button_w),
-        ("Copy", ID_COPY, button_w),
-        ("Try to sign in now", ID_LOGIN, scale(170)),
-    ] {
+    let mut buttons = vec![
+        ("Close".to_string(), ID_CLOSE, button_w),
+        ("Save to file\u{2026}".to_string(), ID_SAVE, button_w),
+        ("Copy".to_string(), ID_COPY, button_w),
+    ];
+    // Only when the integration offers one.
+    if let Some(action) = action {
+        buttons.push((action.to_string(), ID_LOGIN, scale(170)));
+    }
+
+    for (label, id, w) in buttons {
         button(
             hwnd,
-            label,
+            &label,
             id,
             Place {
                 x: right - w,
@@ -570,16 +475,14 @@ fn build(hwnd: HWND, report: &str, scale: &impl Fn(i32) -> i32, font: HFONT) {
     }
 }
 
-/// Fill in the Discord section from a worker thread.
+/// Fill in the integration's section from a worker thread.
 ///
 /// Replaces the "checking..." placeholder rather than appending, so the
 /// finished report reads as though it had been gathered in one go.
-fn probe_discord(hwnd: HWND) {
+fn start_probe(hwnd: HWND, probe: fn() -> String) {
     let target = hwnd.0 as isize;
     std::thread::spawn(move || {
-        let mut text = String::new();
-        section_discord(&mut text);
-        text.push_str(&footer());
+        let text = probe() + &footer();
 
         let boxed = Box::into_raw(Box::new(text)) as usize;
         unsafe {
@@ -593,43 +496,20 @@ fn probe_discord(hwnd: HWND) {
     });
 }
 
-/// Run the real sign-in, on a worker thread, and append what happened.
-///
-/// The handshake in the report above proves only the client id. Authorisation
-/// is a separate exchange that uses the client secret and the registered
-/// redirect URI, and it is where a correctly-created-but-misconfigured
-/// application actually fails — so the only way to diagnose it is to try it.
-fn try_sign_in(hwnd: HWND) {
-    let (config, _) = Config::load();
-    let credentials = crate::integration::discord::settings::credentials(&config);
-
-    if !credentials.is_complete() {
-        append(
-            hwnd,
-            &format!("\r\nSIGN-IN TEST\r\n{BAD}cannot try     no client id or secret set\r\n"),
-        );
-        return;
-    }
-
+/// Run the integration's action on a worker thread and append what happened.
+fn start_action(hwnd: HWND, announcement: &str, run: fn() -> String) {
     unsafe {
         if let Ok(control) = GetDlgItem(Some(hwnd), ID_LOGIN as i32) {
             let _ = windows::Win32::UI::Input::KeyboardAndMouse::EnableWindow(control, false);
         }
     }
 
-    append(
-        hwnd,
-        &format!(
-            "\r\nSIGN-IN TEST\r\n\
-             {INFO}asking Discord to authorise. Switch to Discord and approve\r\n\
-             {INFO}the prompt; it can open behind the main window.\r\n"
-        ),
-    );
+    append(hwnd, announcement);
 
     // HWND is not Send, so carry the raw value across.
     let target = hwnd.0 as isize;
     std::thread::spawn(move || {
-        let text = sign_in(&credentials);
+        let text = run();
         let boxed = Box::into_raw(Box::new(text)) as usize;
         unsafe {
             let _ = PostMessageW(
@@ -642,74 +522,13 @@ fn try_sign_in(hwnd: HWND) {
     });
 }
 
-fn sign_in(credentials: &Credentials) -> String {
-    let mut client = match RpcClient::connect(&credentials.client_id) {
-        Ok(client) => client,
-        Err(error) => return format!("{BAD}connect        {error}\r\n"),
-    };
-
-    match oauth::login(&mut client, credentials, || {}) {
-        Ok(token) => format!(
-            "{OK}signed in      it worked; token saved\r\n\
-             {INFO}scopes         {}\r\n\
-             {INFO}               Start discord-taskbar.exe and join a voice\r\n\
-             {INFO}               channel — it should appear now.\r\n",
-            token.scope
-        ),
-        Err(error) => explain(&error),
-    }
-}
-
-/// Turn an authorisation failure into something actionable.
-fn explain(error: &RpcError) -> String {
-    let text = error.to_string();
-    let lower = text.to_lowercase();
-    let mut out = format!("{BAD}sign-in        {text}\r\n");
-
-    let advice = if lower.contains("redirect") || lower.contains("invalid_request") {
-        Some(
-            "Discord refused the token exchange. Almost always this means\n\
-             http://localhost is not registered on your application. Open\n\
-             the OAuth2 page, add it under Redirects, and Save Changes.",
-        )
-    } else if lower.contains("invalid_client") {
-        Some(
-            "Discord rejected the client secret. Reset it on the OAuth2\n\
-             page, copy the new one, and paste it into Settings.",
-        )
-    } else if lower.contains("invalid_grant") {
-        Some(
-            "The authorisation code was refused. This is usually the\n\
-             redirect URI differing from the registered one — it must be\n\
-             exactly http://localhost, with no trailing slash.",
-        )
-    } else if lower.contains("denied") || lower.contains("4001") || lower.contains("cancel") {
-        Some(
-            "The prompt was dismissed rather than approved. Run this again\n\
-             and press Authorize in Discord.",
-        )
-    } else if lower.contains("not running") || lower.contains("pipe") {
-        Some("Discord closed midway through. Reopen it and try again.")
-    } else {
-        None
-    };
-
-    if let Some(advice) = advice {
-        for line in advice.lines() {
-            let _ = writeln!(out, "{INFO}               {}\r", line.trim());
-        }
-    }
-    out
-}
-
-/// Swap the "checking..." line for the finished Discord section.
 fn replace_placeholder(hwnd: HWND, text: &str) {
     DOCTOR.with(|cell| {
         if let Some(doctor) = cell.borrow_mut().as_mut() {
             let placeholder = format!("{INFO}checking...
 ");
-            if let Some(at) = doctor.report.find(&placeholder) {
-                doctor.report.truncate(at);
+            if let Some(at) = doctor.text.find(&placeholder) {
+                doctor.text.truncate(at);
             }
         }
     });
@@ -721,8 +540,8 @@ fn append(hwnd: HWND, text: &str) {
     let full = DOCTOR.with(|cell| {
         let mut borrow = cell.borrow_mut();
         let doctor = borrow.as_mut()?;
-        doctor.report.push_str(text);
-        Some(doctor.report.clone())
+        doctor.text.push_str(text);
+        Some(doctor.text.clone())
     });
 
     let Some(full) = full else { return };
@@ -856,13 +675,23 @@ unsafe extern "system" fn wndproc(
 
         WM_COMMAND => {
             let id = wparam.0 & 0xFFFF;
-            let report = DOCTOR.with(|cell| {
-                cell.borrow().as_ref().map(|d| d.report.clone())
-            });
-            match (id, report) {
-                (ID_COPY, Some(report)) => copy(hwnd, &report),
-                (ID_SAVE, Some(report)) => save(hwnd, &report),
-                (ID_LOGIN, _) => try_sign_in(hwnd),
+            let text = DOCTOR.with(|cell| cell.borrow().as_ref().map(|d| d.text.clone()));
+            match (id, text) {
+                (ID_COPY, Some(text)) => copy(hwnd, &text),
+                (ID_SAVE, Some(text)) => save(hwnd, &text),
+                (ID_LOGIN, _) => {
+                    let action = DOCTOR.with(|cell| {
+                        cell.borrow().as_ref().and_then(|d| {
+                            d.report
+                                .action
+                                .as_ref()
+                                .map(|a| (a.announcement.clone(), a.run))
+                        })
+                    });
+                    if let Some((announcement, run)) = action {
+                        start_action(hwnd, &announcement, run);
+                    }
+                }
                 (ID_CLOSE, _) => {
                     let _ = DestroyWindow(hwnd);
                 }

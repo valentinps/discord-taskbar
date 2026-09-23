@@ -278,12 +278,6 @@ pub trait Integration {
     }
 
     fn on_tray_command(&mut self, _id: usize, _ui: &mut dyn Ui) {}
-
-    /// Lines for the diagnostics window, under a heading of this
-    /// integration's name.
-    fn diagnostics(&self) -> Vec<String> {
-        Vec::new()
-    }
 }
 
 /// The first tray command id an integration may use.

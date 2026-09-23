@@ -426,7 +426,7 @@ impl Canvas {
         }
     }
 
-    /// Anti-aliased ring — this is the Discord speaking outline.
+    /// Anti-aliased ring — a speaking outline, a progress arc.
     pub fn stroke_circle(&mut self, cx: f32, cy: f32, radius: f32, thickness: f32, color: Color) {
         let src = color.premultiplied();
         let outer = radius + thickness / 2.0;

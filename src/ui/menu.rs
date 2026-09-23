@@ -528,7 +528,7 @@ pub fn show(
             // owning thread is not in the foreground.
             WS_EX_LAYERED | WS_EX_TOPMOST | WS_EX_TOOLWINDOW,
             CLASS_NAME,
-            w!("Discord Taskbar Menu"),
+            w!("Taskbar widget menu"),
             WS_POPUP,
             0,
             0,

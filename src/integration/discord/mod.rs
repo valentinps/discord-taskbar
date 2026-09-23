@@ -5,11 +5,13 @@
 //! Discord lives under here — the pipe, OAuth, the voice model, the volume
 //! curve and the decisions about what a click means.
 
+pub mod doctor;
 pub mod icons;
 pub mod model;
 pub mod provider;
 pub mod settings;
 pub mod view;
+pub mod window;
 pub mod volume;
 
 use std::time::Duration;
@@ -505,5 +507,5 @@ impl Integration for Discord {
 
 /// Bring the Discord window forward.
 pub fn focus() -> bool {
-    crate::ui::tray::focus_discord()
+    window::focus_discord()
 }

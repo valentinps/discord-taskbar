@@ -769,7 +769,7 @@ impl App {
     ///
     /// A separate process on purpose: the report should describe what a fresh
     /// launch would find, and running it here would block the message loop
-    /// for as long as the Discord handshake takes.
+    /// for as long as the integration's own checks take.
     fn open_doctor(&mut self) {
         let Ok(exe) = std::env::current_exe() else {
             self.notice = Some("Could not locate the app".to_string());

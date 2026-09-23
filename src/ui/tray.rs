@@ -1,14 +1,15 @@
 //! Notification-area icon and its context menu.
 //!
 //! The widget itself is small and easy to miss, so the tray icon is the
-//! reliable way to reach the app — quit it, re-authorize, or find the config.
+//! reliable way to reach the app — quit it, change settings, or find the
+//! config. The integration supplies the picture and the first few rows; the
+//! rest are the widget's own.
 //!
 //! The icon is drawn at runtime with the same primitives as the widget, so it
 //! is crisp at any DPI and adds nothing to the binary.
 
 use windows::core::PCWSTR;
-use windows::Win32::Foundation::{HWND, LPARAM, POINT};
-use windows::Win32::System::Threading::{AttachThreadInput, GetCurrentThreadId};
+use windows::Win32::Foundation::{HWND, POINT};
 use windows::Win32::Graphics::Gdi::{CreateBitmap, DeleteObject, HBITMAP};
 use windows::Win32::UI::Shell::{
     Shell_NotifyIconW, NIF_ICON, NIF_MESSAGE, NIF_TIP, NIM_ADD, NIM_DELETE, NIM_MODIFY,
@@ -23,26 +24,18 @@ use super::render::{Canvas, Color};
 
 pub const TRAY_ID: u32 = 1;
 
-/// Menu command identifiers.
-pub const CMD_FOCUS_DISCORD: usize = 100;
-pub const CMD_REAUTHORIZE: usize = 101;
+/// The widget's own menu commands. An integration's start at
+/// `integration::TRAY_ID_BASE`.
 pub const CMD_OPEN_CONFIG: usize = 102;
-pub const CMD_SETTINGS: usize = 106;
-pub const CMD_RECONNECT: usize = 103;
 pub const CMD_RESTART: usize = 104;
 pub const CMD_QUIT: usize = 105;
+pub const CMD_SETTINGS: usize = 106;
 pub const CMD_DOCTOR: usize = 107;
 
 /// One command per monitor in the "Show on" submenu, offset by index.
 pub const CMD_MONITOR_BASE: usize = 300;
 /// Selects every monitor at once.
 pub const CMD_MONITOR_ALL: usize = 299;
-
-/// Discord blurple, so the tray icon is recognisable at a glance.
-///
-/// Moves to the integration once it supplies its own branding; for now it is
-/// the default handed to `Tray::new`.
-pub const BRAND: Color = Color::rgb(0x58, 0x65, 0xF2);
 
 pub struct Tray {
     hwnd: HWND,
@@ -64,7 +57,7 @@ impl Tray {
             hIcon: icon,
             ..Default::default()
         };
-        write_tip(&mut data.szTip, "Discord Taskbar");
+        write_tip(&mut data.szTip, "Taskbar widget");
 
         let added = unsafe { Shell_NotifyIconW(NIM_ADD, &data).as_bool() };
         if !added {
@@ -213,126 +206,7 @@ fn build_icon(glyph: Glyph, colour: Color) -> Option<HICON> {
     }
 }
 
-/// Bring Discord's main window to the foreground.
-///
-/// Matching on the window class alone is not enough: `Chrome_WidgetWin_1` is
-/// the class every Chromium app uses, so the first match is just as likely to
-/// be a browser. The window has to be matched to a process actually called
-/// Discord.
-pub fn focus_discord() -> bool {
-    let Some(hwnd) = find_discord_window() else {
-        return false;
-    };
-
-    unsafe {
-        if IsIconic(hwnd).as_bool() {
-            let _ = ShowWindow(hwnd, SW_RESTORE);
-        }
-
-        // Windows refuses SetForegroundWindow from a process that does not own
-        // the foreground. Briefly sharing an input queue with whoever does is
-        // the long-standing way around that.
-        let foreground = GetForegroundWindow();
-        let target_thread = GetWindowThreadProcessId(hwnd, None);
-        let foreground_thread = if foreground.is_invalid() {
-            0
-        } else {
-            GetWindowThreadProcessId(foreground, None)
-        };
-        let our_thread = GetCurrentThreadId();
-
-        let mut attached = Vec::new();
-        for thread in [foreground_thread, target_thread] {
-            if thread != 0 && thread != our_thread && AttachThreadInput(our_thread, thread, true).as_bool() {
-                attached.push(thread);
-            }
-        }
-
-        let _ = BringWindowToTop(hwnd);
-        let ok = SetForegroundWindow(hwnd).as_bool();
-
-        for thread in attached {
-            let _ = AttachThreadInput(our_thread, thread, false);
-        }
-
-        ok
-    }
-}
-
-/// Find a visible, titled top-level window belonging to `Discord.exe`.
-fn find_discord_window() -> Option<HWND> {
-    struct Search {
-        found: Option<HWND>,
-    }
-
-    unsafe extern "system" fn visit(hwnd: HWND, param: LPARAM) -> windows::core::BOOL {
-        unsafe {
-            let search = &mut *(param.0 as *mut Search);
-
-            if !IsWindowVisible(hwnd).as_bool() || GetWindowTextLengthW(hwnd) == 0 {
-                return true.into();
-            }
-
-            let mut pid = 0u32;
-            GetWindowThreadProcessId(hwnd, Some(&mut pid));
-            if pid == 0 {
-                return true.into();
-            }
-
-            if process_is_discord(pid) {
-                search.found = Some(hwnd);
-                return false.into();
-            }
-
-            true.into()
-        }
-    }
-
-    unsafe {
-        let mut search = Search { found: None };
-        let _ = EnumWindows(Some(visit), LPARAM(&mut search as *mut Search as isize));
-        search.found
-    }
-}
-
-fn process_is_discord(pid: u32) -> bool {
-    use windows::Win32::System::Threading::{
-        OpenProcess, QueryFullProcessImageNameW, PROCESS_NAME_FORMAT,
-        PROCESS_QUERY_LIMITED_INFORMATION,
-    };
-
-    unsafe {
-        let Ok(process) = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid) else {
-            return false;
-        };
-
-        let mut buffer = [0u16; 512];
-        let mut length = buffer.len() as u32;
-        let ok = QueryFullProcessImageNameW(
-            process,
-            PROCESS_NAME_FORMAT(0),
-            windows::core::PWSTR(buffer.as_mut_ptr()),
-            &mut length,
-        )
-        .is_ok();
-
-        let _ = windows::Win32::Foundation::CloseHandle(process);
-        if !ok {
-            return false;
-        }
-
-        let path = String::from_utf16_lossy(&buffer[..length as usize]).to_ascii_lowercase();
-        let name = path.rsplit(['\\', '/']).next().unwrap_or("");
-
-        // Covers Discord, DiscordCanary, DiscordPTB and Vesktop.
-        matches!(
-            name,
-            "discord.exe" | "discordcanary.exe" | "discordptb.exe" | "discorddevelopment.exe" | "vesktop.exe"
-        )
-    }
-}
-
-fn wide(text: &str) -> Vec<u16> {
+pub fn wide(text: &str) -> Vec<u16> {
     text.encode_utf16().chain(std::iter::once(0)).collect()
 }
 

@@ -33,7 +33,7 @@ fn main() {
     // that something is wrong, and refusing to start because a copy is
     // already up would be exactly the wrong answer.
     if std::env::args().any(|arg| arg == "--doctor") {
-        ui::doctor::run();
+        ui::doctor::run(discord::doctor::report());
         return;
     }
 
