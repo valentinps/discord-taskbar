@@ -239,6 +239,32 @@ pub fn credentials(config: &Config) -> Credentials {
     }
 }
 
+/// Write out every setting this integration has, defaults included.
+///
+/// The settings window edits the file by path and knows nothing about what a
+/// missing key should default to: a row whose key is absent shows blank, and
+/// saving it turns a blank number into its minimum and a blank toggle into
+/// off. A fresh install has no section at all, so without this the first Save
+/// would quietly shrink every avatar to 8px. Returns whether anything changed.
+pub fn fill_defaults(config: &mut Config) -> bool {
+    let current = config.integration(ID);
+    let stored: Stored = serde_json::from_value(current.clone()).unwrap_or_default();
+    let Ok(mut full) = serde_json::to_value(&stored) else {
+        return false;
+    };
+    // Anything in the section this build does not know is kept, as `save` does.
+    if let (Some(full), Some(current)) = (full.as_object_mut(), current.as_object()) {
+        for (key, value) in current {
+            full.entry(key.clone()).or_insert_with(|| value.clone());
+        }
+    }
+    if full == current {
+        return false;
+    }
+    config.integrations.insert(ID.to_string(), full);
+    true
+}
+
 /// Write credentials into a config, leaving every other setting alone.
 ///
 /// The installer's wizard collects them, and only this crate knows where they

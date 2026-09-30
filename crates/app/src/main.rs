@@ -48,9 +48,17 @@ fn main() {
         return;
     }
 
-    let (config, warning) = Config::load_or_create();
+    let (mut config, mut warning) = Config::load_or_create();
     if let Some(warning) = &warning {
         eprintln!("discord-taskbar: {warning}");
+    }
+    // Only when the file loaded: writing defaults over one that did not
+    // would replace whatever the user had in it.
+    if warning.is_none() && discord::settings::fill_defaults(&mut config) {
+        warning = config
+            .save()
+            .err()
+            .map(|e| format!("Could not write config.json: {e}"));
     }
 
     // Choosing what the widget shows is the whole of this binary's job.

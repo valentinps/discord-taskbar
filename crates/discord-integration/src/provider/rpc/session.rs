@@ -21,10 +21,13 @@ const BACKOFF_MIN: Duration = Duration::from_secs(2);
 const BACKOFF_MAX: Duration = Duration::from_secs(30);
 
 /// Run forever: connect, serve events, reconnect on failure.
-pub fn run(creds: Credentials, sink: EventSink, control: ProviderControl) {
+pub fn run(sink: EventSink, control: ProviderControl) {
     let mut backoff = BACKOFF_MIN;
 
     loop {
+        // Read afresh each time round, so credentials saved in the settings
+        // window are picked up without restarting the app.
+        let creds = control.credentials();
         let outcome = session(&creds, &sink, &control);
         control.detach();
 
@@ -38,14 +41,19 @@ pub fn run(creds: Credentials, sink: EventSink, control: ProviderControl) {
                 let fatal = matches!(error, RpcError::Config(_));
                 sink.send(ProviderEvent::Offline(error.to_string()));
                 if fatal {
-                    // Bad credentials will not fix themselves by retrying.
-                    return;
+                    // Bad credentials will not fix themselves by retrying, so
+                    // wait for different ones rather than hammering Discord.
+                    sink.send(ProviderEvent::Status(VoiceStatus::default().into()));
+                    control.wait_for_credentials(&creds, None);
+                    backoff = BACKOFF_MIN;
+                    continue;
                 }
             }
         }
 
         sink.send(ProviderEvent::Status(VoiceStatus::default().into()));
-        std::thread::sleep(backoff);
+        // Cut short by new credentials, so saving them takes effect at once.
+        control.wait_for_credentials(&creds, Some(backoff));
         backoff = (backoff * 2).min(BACKOFF_MAX);
     }
 }

@@ -58,7 +58,6 @@ pub struct Discord {
     /// Everything this integration lets you change. Reloaded whenever the
     /// config is saved.
     settings: Settings,
-    creds: Credentials,
     /// Drive the widget from a synthetic call instead of the real client, so
     /// interface work does not require being in a voice channel.
     demo: bool,
@@ -66,15 +65,16 @@ pub struct Discord {
 
 impl Discord {
     pub fn new(creds: Credentials, demo: bool) -> Self {
+        let control = if demo {
+            ProviderControl::demo()
+        } else {
+            ProviderControl::new()
+        };
+        control.set_credentials(creds);
         Discord {
             status: VoiceStatus::default(),
             settings: Settings::default(),
-            control: if demo {
-                ProviderControl::demo()
-            } else {
-                ProviderControl::new()
-            },
-            creds,
+            control,
             demo,
         }
     }
@@ -372,7 +372,7 @@ impl Integration for Discord {
         if self.demo {
             provider::spawn_demo(events);
         } else {
-            provider::spawn_rpc(self.creds.clone(), events, self.control.clone());
+            provider::spawn_rpc(events, self.control.clone());
         }
     }
 
@@ -417,10 +417,12 @@ impl Integration for Discord {
 
     fn apply_settings(&mut self, stored: &serde_json::Value) {
         let stored: Stored = serde_json::from_value(stored.clone()).unwrap_or_default();
-        self.creds = Credentials {
+        // Reconnects if they changed, which is what makes saving them in the
+        // settings window take effect without a restart.
+        self.control.set_credentials(Credentials {
             client_id: stored.client_id.clone(),
             client_secret: stored.client_secret.clone(),
-        };
+        });
         self.settings = Settings::from(&stored);
     }
 

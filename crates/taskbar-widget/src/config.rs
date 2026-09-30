@@ -97,6 +97,16 @@ fn migrate(raw: &mut Value) {
         return;
     };
 
+    // `accent` was `speaking`. Serde accepts either, but not both: a file with
+    // the two is rejected as a duplicate field, and the app falls back to
+    // defaults. `save` keeps keys it does not recognise, so the rename has to
+    // happen here or the old name would be carried along beside the new one.
+    if let Some(Value::Object(appearance)) = root.get_mut("appearance") {
+        if let Some(old) = appearance.remove("speaking") {
+            appearance.entry("accent").or_insert(old);
+        }
+    }
+
     // Only ever run once: a config that already has the section is current.
     let already = root
         .get("integrations")
@@ -251,10 +261,106 @@ impl Config {
         }
     }
 
+    /// Write the config, keeping whatever is in the file that this build does
+    /// not know about.
+    ///
+    /// Serialising `self` alone would drop every key this build has no field
+    /// for. That is how a newer config lost its credentials: an older build
+    /// started at login, did not know about `integrations`, and rewrote the
+    /// file without it. Laying our values over the file's instead means a
+    /// build only ever changes what it understands.
     pub fn save(&self) -> Result<(), ConfigError> {
         let dir = config_dir();
         std::fs::create_dir_all(&dir).map_err(ConfigError::Io)?;
-        let text = serde_json::to_string_pretty(self).map_err(ConfigError::Parse)?;
+
+        let ours = serde_json::to_value(self).map_err(ConfigError::Parse)?;
+        let existing = std::fs::read(config_path())
+            .ok()
+            .and_then(|bytes| serde_json::from_str::<Value>(&decode(&bytes)).ok());
+        let merged = match existing {
+            Some(mut disk) => {
+                migrate(&mut disk);
+                overlay(&mut disk, ours.clone());
+                // Keeping someone else's keys must never cost us our own
+                // file: if the result would not load, write what we know.
+                if serde_json::from_value::<Config>(disk.clone()).is_ok() {
+                    disk
+                } else {
+                    ours
+                }
+            }
+            None => ours,
+        };
+
+        let text = serde_json::to_string_pretty(&merged).map_err(ConfigError::Parse)?;
         std::fs::write(config_path(), text).map_err(ConfigError::Io)
+    }
+}
+
+/// Lay `ours` over `base`: objects merge key by key, anything else replaces.
+///
+/// Arrays replace rather than merge — a list of monitors is one setting, not
+/// a set of them.
+fn overlay(base: &mut Value, ours: Value) {
+    match (base, ours) {
+        (Value::Object(base), Value::Object(ours)) => {
+            for (key, value) in ours {
+                match base.get_mut(&key) {
+                    Some(existing) => overlay(existing, value),
+                    None => {
+                        base.insert(key, value);
+                    }
+                }
+            }
+        }
+        (base, ours) => *base = ours,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn overlay_keeps_keys_it_does_not_know() {
+        let mut disk = json!({
+            "integrations": { "discord": { "client_id": "123", "future": 1 } },
+            "unknown_top_level": true,
+        });
+        let ours = json!({
+            "integrations": { "discord": { "client_id": "456" } },
+            "appearance": { "monitors": ["2"] },
+        });
+        overlay(&mut disk, ours);
+        assert_eq!(
+            disk,
+            json!({
+                "integrations": { "discord": { "client_id": "456", "future": 1 } },
+                "unknown_top_level": true,
+                "appearance": { "monitors": ["2"] },
+            })
+        );
+    }
+
+    #[test]
+    fn an_old_accent_name_does_not_survive_beside_the_new_one() {
+        // What `save` does to an old file: migrate it, then lay the current
+        // config over it.
+        let mut disk = json!({ "appearance": { "speaking": "#111111" } });
+        migrate(&mut disk);
+        let config: Config = serde_json::from_value(disk.clone()).unwrap();
+        overlay(&mut disk, serde_json::to_value(&config).unwrap());
+
+        assert!(disk["appearance"].get("speaking").is_none());
+        assert_eq!(disk["appearance"]["accent"], "#111111");
+        assert!(serde_json::from_value::<Config>(disk).is_ok());
+    }
+
+    #[test]
+    fn overlay_replaces_arrays_whole() {
+        let mut disk = json!({ "monitors": ["1", "2"] });
+        overlay(&mut disk, json!({ "monitors": ["3"] }));
+        assert_eq!(disk, json!({ "monitors": ["3"] }));
     }
 }

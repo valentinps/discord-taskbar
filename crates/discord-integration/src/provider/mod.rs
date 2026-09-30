@@ -8,7 +8,8 @@
 pub mod rpc;
 
 use std::sync::atomic::{AtomicBool, AtomicIsize, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Condvar, Mutex};
+use std::time::Duration;
 
 use serde_json::{json, Value};
 
@@ -45,6 +46,10 @@ pub struct ProviderControl {
     /// In demo mode commands are swallowed and reported as sent, so the UI
     /// behaves exactly as it would against a real client.
     demo: Arc<AtomicBool>,
+    /// What the session signs in with. Shared rather than handed over once, so
+    /// credentials saved in the settings window reach a session that is
+    /// already running — or one that stopped because it had none.
+    creds: Arc<(Mutex<Credentials>, Condvar)>,
 }
 
 impl ProviderControl {
@@ -159,6 +164,49 @@ impl ProviderControl {
         self.reconnect();
     }
 
+    /// The credentials the next session should use.
+    pub fn credentials(&self) -> Credentials {
+        let (slot, _) = &*self.creds;
+        slot.lock().map(|c| c.clone()).unwrap_or_default()
+    }
+
+    /// Replace the credentials, and reconnect if they changed.
+    pub fn set_credentials(&self, creds: Credentials) {
+        let (slot, changed) = &*self.creds;
+        let Ok(mut current) = slot.lock() else {
+            return;
+        };
+        if current.client_id == creds.client_id && current.client_secret == creds.client_secret {
+            return;
+        }
+        *current = creds;
+        drop(current);
+        changed.notify_all();
+        self.reconnect();
+    }
+
+    /// Sleep for `timeout`, or until the credentials differ from `seen`.
+    ///
+    /// `None` waits for new credentials however long that takes: what the
+    /// session does when the ones it has cannot work.
+    pub fn wait_for_credentials(&self, seen: &Credentials, timeout: Option<Duration>) {
+        let (slot, changed) = &*self.creds;
+        let Ok(guard) = slot.lock() else {
+            return;
+        };
+        let same = |c: &mut Credentials| {
+            c.client_id == seen.client_id && c.client_secret == seen.client_secret
+        };
+        match timeout {
+            Some(timeout) => {
+                drop(changed.wait_timeout_while(guard, timeout, same));
+            }
+            None => {
+                drop(changed.wait_while(guard, same));
+            }
+        }
+    }
+
     /// Consumed by the session before it authenticates.
     pub fn take_reauthorize(&self) -> bool {
         self.reauthorize.swap(false, Ordering::SeqCst)
@@ -226,12 +274,11 @@ pub fn spawn_demo(sink: EventSink) -> std::thread::JoinHandle<()> {
 
 /// Start the RPC provider on its own thread.
 pub fn spawn_rpc(
-    creds: Credentials,
     sink: EventSink,
     control: ProviderControl,
 ) -> std::thread::JoinHandle<()> {
     std::thread::Builder::new()
         .name("discord-rpc".to_string())
-        .spawn(move || rpc::session::run(creds, sink, control))
+        .spawn(move || rpc::session::run(sink, control))
         .expect("spawn rpc provider thread")
 }
