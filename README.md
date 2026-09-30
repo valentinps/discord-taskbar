@@ -109,7 +109,12 @@ re-checks the taskbar's position, which is what TrafficMonitor does too.
 
 ## Install
 
-For anyone who just wants to run it, `make-installer.sh` produces a single
+Download `DiscordTaskbarSetup.exe` from the
+[latest release](https://github.com/valentinps/discord-taskbar/releases/latest)
+and run it. After that the app keeps itself up to date — see
+[Updates](#updates).
+
+To build the installer yourself, `make-installer.sh` produces a single
 self-contained `dist/DiscordTaskbarSetup.exe`. It embeds the application, walks
 through creating the Discord application below, and installs per-user under
 `%LOCALAPPDATA%\Programs\Discord Taskbar` — so it never asks for administrator
@@ -135,6 +140,34 @@ does not ship with Windows. A default Rust MSVC build pulls in
 without it the process dies at load time, before `main` runs — the app just
 never appears, with nothing to go on. That is a bad failure to hand somebody
 along with an installer, and the static CRT costs about 100 KB.
+
+### Updates
+
+The installed copy checks this repository's latest GitHub release shortly
+after it starts and every six hours after that. When the release is newer, it
+downloads the release's `discord-taskbar.exe` in the background, and the tray
+icon gets a green down-arrow badge. **Update to vX.Y.Z** at the top of the tray
+menu installs it and restarts; if you never click it, the next start (your
+next sign-in, say) installs it instead.
+
+Nothing is replaced while the app runs. The running exe is renamed out of the
+way, the new one copied into its place, and the old one deleted on the next
+start. A download is only kept if it is exactly the size GitHub lists and is a
+Windows executable, so a cut-off download never becomes the thing that runs
+at sign-in. Copies run from anywhere but the install folder — a build in
+`target\release`, `--demo` — never update themselves.
+
+### Releasing
+
+Bump `version` in the workspace `Cargo.toml`, commit, then:
+
+```sh
+./release.sh
+```
+
+That builds the installer, tags `v<version>`, pushes the tag and publishes a
+GitHub release carrying both `DiscordTaskbarSetup.exe`, for new installs, and
+the bare `discord-taskbar.exe`, which is what installed copies update to.
 
 No installer toolchain is involved — no Inno Setup, no NSIS, no WiX. It is a
 second Rust binary in `installer/`, which embeds the first with `include_bytes!`.

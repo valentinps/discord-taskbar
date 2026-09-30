@@ -12,3 +12,4 @@ pub mod assets;
 pub mod config;
 pub mod http;
 pub mod ui;
+pub mod update;

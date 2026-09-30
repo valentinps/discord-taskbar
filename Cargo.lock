@@ -4,7 +4,7 @@ version = 4
 
 [[package]]
 name = "discord-integration"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -14,7 +14,7 @@ dependencies = [
 
 [[package]]
 name = "discord-taskbar"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "discord-integration",
  "taskbar-widget",
@@ -23,7 +23,7 @@ dependencies = [
 
 [[package]]
 name = "discord-taskbar-installer"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "discord-integration",
  "taskbar-widget",
@@ -127,7 +127,7 @@ dependencies = [
 
 [[package]]
 name = "taskbar-widget"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "serde",
  "serde_json",

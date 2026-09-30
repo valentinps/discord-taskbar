@@ -15,6 +15,7 @@ use taskbar_widget::config::Config;
 use discord_integration::{self as discord, Discord};
 use taskbar_widget::ui::integration::Integration;
 use taskbar_widget::ui;
+use taskbar_widget::update;
 
 /// Give up rather than hang forever if the old process will not exit.
 const RESTART_TIMEOUT_MS: u32 = 10_000;
@@ -46,6 +47,17 @@ fn main() {
 
     if already_running(demo) {
         return;
+    }
+
+    // Only the installed copy updates itself, and never the demo, which runs
+    // alongside it from the same file.
+    let updates = Some(update_source()).filter(|source| !demo && source.applies());
+    if let Some(source) = &updates {
+        // An update downloaded last time and never applied goes in now, before
+        // anything is on screen. The updated copy takes over from here.
+        if update::at_startup(source) {
+            return;
+        }
     }
 
     let (mut config, mut warning) = Config::load_or_create();
@@ -81,9 +93,24 @@ fn main() {
         setup_notice,
         needs_setup,
         settings,
+        updates,
     ) {
         eprintln!("discord-taskbar: {error}");
         std::process::exit(1);
+    }
+}
+
+/// Releases are published at <https://github.com/valentinps/discord-taskbar>,
+/// and the installer puts the app in `%LOCALAPPDATA%\Programs\Discord Taskbar`.
+fn update_source() -> update::Source {
+    let local = std::env::var("LOCALAPPDATA").unwrap_or_default();
+    update::Source {
+        repo: "valentinps/discord-taskbar",
+        asset: "discord-taskbar.exe",
+        version: env!("CARGO_PKG_VERSION"),
+        installed_dir: std::path::Path::new(&local)
+            .join("Programs")
+            .join("Discord Taskbar"),
     }
 }
 

@@ -34,7 +34,7 @@ use super::{
     take_widget_input, Notifier, TIMER_ANCHOR, TIMER_ANCHOR_MS, WM_APP_ASSET_READY,
     WM_APP_INTEGRATION, WM_APP_TRAY,
     WM_APP_WIDGET_CLICK, WM_APP_WIDGET_CONTEXT, WM_APP_WIDGET_CURSOR, WM_APP_WIDGET_HOVER,
-    WM_APP_WIDGET_LEAVE, WM_APP_WIDGET_MIDDLE, WM_APP_WIDGET_PAINT, WM_APP_WIDGET_WHEEL,
+    WM_APP_UPDATE_READY, WM_APP_WIDGET_LEAVE, WM_APP_WIDGET_MIDDLE, WM_APP_WIDGET_PAINT, WM_APP_WIDGET_WHEEL,
 };
 
 const CLASS_NAME: windows::core::PCWSTR = w!("DiscordTaskbarHost");
@@ -109,6 +109,8 @@ struct App {
     popup: Option<HWND>,
     popup_canvas: Option<Canvas>,
     tray: Option<Tray>,
+    /// A downloaded update, offered in the tray until it is installed.
+    update: Option<crate::update::Ready>,
 }
 
 impl App {
@@ -139,6 +141,7 @@ impl App {
             popup: None,
             popup_canvas: None,
             tray,
+            update: None,
         }
     }
 
@@ -675,6 +678,7 @@ impl App {
     fn on_menu_command(&mut self, command: usize) {
         match command {
             tray::CMD_RESTART => tray::restart(),
+            tray::CMD_UPDATE => self.install_update(),
             tray::CMD_SETTINGS => self.open_settings(),
             tray::CMD_OPEN_CONFIG => tray::open_folder(&crate::config::config_dir()),
             // Out of process, so the checks see the machine as a fresh
@@ -759,9 +763,48 @@ impl App {
             TrayItem::command(tray::CMD_QUIT, "Quit"),
         ]);
 
+        // First, so the row the badge is about is the first thing seen.
+        if let Some(update) = &self.update {
+            items.insert(0, TrayItem::Separator);
+            items.insert(
+                0,
+                TrayItem::command(
+                    tray::CMD_UPDATE,
+                    format!("Update to v{} (restarts)", update.version),
+                ),
+            );
+        }
+
         let choice = self.tray.as_ref().and_then(|t| t.show_menu(&items));
         if let Some(command) = choice {
             self.on_menu_command(command);
+        }
+    }
+
+    /// A download finished: badge the tray icon and offer the update.
+    fn on_update_ready(&mut self) {
+        let Some(ready) = crate::update::ready() else {
+            return;
+        };
+        self.update = Some(ready);
+        if let Some(tray) = &mut self.tray {
+            tray.set_update_badge(true);
+        }
+    }
+
+    fn install_update(&mut self) {
+        let Some(ready) = &self.update else {
+            return;
+        };
+        match crate::update::install(ready) {
+            Ok(()) => unsafe {
+                PostQuitMessage(0);
+            },
+            Err(error) => {
+                self.notice = Some(format!("Update failed: {error}"));
+                self.notice_expires = Some(std::time::Instant::now() + NOTICE_LINGER);
+                self.refresh();
+            }
         }
     }
 
@@ -965,6 +1008,7 @@ pub fn run(
     setup_notice: Option<String>,
     needs_setup: bool,
     open_settings: bool,
+    update: Option<crate::update::Source>,
 ) -> Result<(), String> {
     unsafe {
         // Match explorer's awareness so our coordinates agree with the tray's.
@@ -1022,6 +1066,10 @@ pub fn run(
                 integration.start(EventSink::new(host));
             });
         });
+
+        if let Some(source) = update {
+            crate::update::spawn(source, Notifier::new(host, WM_APP_UPDATE_READY));
+        }
 
         if let Some(message) = setup_notice {
             with_app(|app| {
@@ -1242,6 +1290,11 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM)
                 if let Some(event) = integration::take_event(wparam.0) {
                     with_app(|app| app.on_integration_event(event));
                 }
+                LRESULT(0)
+            }
+
+            WM_APP_UPDATE_READY => {
+                with_app(|app| app.on_update_ready());
                 LRESULT(0)
             }
 

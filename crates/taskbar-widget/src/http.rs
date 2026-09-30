@@ -212,3 +212,8 @@ pub fn post_form(host: &str, path: &str, pairs: &[(&str, &str)]) -> Result<Respo
 pub fn get(host: &str, path: &str) -> Result<Response> {
     request("GET", host, path, None, None)
 }
+
+/// GET with extra request headers, each ending in `\r\n`.
+pub fn get_with_headers(host: &str, path: &str, headers: &str) -> Result<Response> {
+    request("GET", host, path, Some(headers), None)
+}

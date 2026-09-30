@@ -31,6 +31,7 @@ pub const CMD_RESTART: usize = 104;
 pub const CMD_QUIT: usize = 105;
 pub const CMD_SETTINGS: usize = 106;
 pub const CMD_DOCTOR: usize = 107;
+pub const CMD_UPDATE: usize = 108;
 
 /// One command per monitor in the "Show on" submenu, offset by index.
 pub const CMD_MONITOR_BASE: usize = 300;
@@ -40,13 +41,15 @@ pub const CMD_MONITOR_ALL: usize = 299;
 pub struct Tray {
     hwnd: HWND,
     icon: HICON,
+    glyph: Glyph,
+    colour: Color,
 }
 
 impl Tray {
     /// `glyph` and `colour` are the picture in the notification area, so the
     /// integration decides what the widget looks like there.
     pub fn new(hwnd: HWND, callback_message: u32, glyph: Glyph, colour: Color) -> Option<Self> {
-        let icon = build_icon(glyph, colour)?;
+        let icon = build_icon(glyph, colour, false)?;
 
         let mut data = NOTIFYICONDATAW {
             cbSize: std::mem::size_of::<NOTIFYICONDATAW>() as u32,
@@ -67,7 +70,32 @@ impl Tray {
             return None;
         }
 
-        Some(Tray { hwnd, icon })
+        Some(Tray {
+            hwnd,
+            icon,
+            glyph,
+            colour,
+        })
+    }
+
+    /// Put a download badge on the icon, or take it off: an update is ready.
+    pub fn set_update_badge(&mut self, shown: bool) {
+        let Some(icon) = build_icon(self.glyph, self.colour, shown) else {
+            return;
+        };
+        let data = NOTIFYICONDATAW {
+            cbSize: std::mem::size_of::<NOTIFYICONDATAW>() as u32,
+            hWnd: self.hwnd,
+            uID: TRAY_ID,
+            uFlags: NIF_ICON,
+            hIcon: icon,
+            ..Default::default()
+        };
+        unsafe {
+            let _ = Shell_NotifyIconW(NIM_MODIFY, &data);
+            let _ = DestroyIcon(self.icon);
+        }
+        self.icon = icon;
     }
 
     /// Update the hover tooltip, e.g. with the current channel.
@@ -165,7 +193,7 @@ fn append(menu: HMENU, items: &[TrayItem]) {
     }
 }
 
-fn build_icon(glyph: Glyph, colour: Color) -> Option<HICON> {
+fn build_icon(glyph: Glyph, colour: Color, update_badge: bool) -> Option<HICON> {
     let size = unsafe { GetSystemMetrics(SM_CXSMICON) }.max(16);
 
     let mut canvas = Canvas::new(size, size)?;
@@ -181,6 +209,10 @@ fn build_icon(glyph: Glyph, colour: Color) -> Option<HICON> {
         colour,
         Color::TRANSPARENT,
     );
+
+    if update_badge {
+        draw_update_badge(&mut canvas, size);
+    }
 
     let colour: HBITMAP = canvas.take_bitmap();
 
@@ -204,6 +236,29 @@ fn build_icon(glyph: Glyph, colour: Color) -> Option<HICON> {
 
         icon
     }
+}
+
+/// A green disc with a down arrow, in the bottom-right corner.
+///
+/// Drawn with lines rather than a font glyph: at sixteen pixels a glyph shrunk
+/// into a badge is a smudge, and the arrow is the whole message.
+fn draw_update_badge(canvas: &mut Canvas, size: i32) {
+    let size = size as f32;
+    let radius = size * 0.3;
+    let (cx, cy) = (size - radius, size - radius);
+    let green = Color::rgb(0x23, 0xA5, 0x59);
+
+    // A dark rim keeps it readable over the glyph and any taskbar colour.
+    canvas.fill_circle(cx, cy, radius, Color::rgb(0x11, 0x11, 0x11));
+    canvas.fill_circle(cx, cy, radius - 1.0, green);
+
+    let stroke = (size / 11.0).max(1.5);
+    let top = cy - radius * 0.55;
+    let tip = cy + radius * 0.5;
+    let wing = radius * 0.45;
+    canvas.stroke_line(cx, top, cx, tip, stroke, Color::WHITE);
+    canvas.stroke_line(cx - wing, tip - wing, cx, tip, stroke, Color::WHITE);
+    canvas.stroke_line(cx + wing, tip - wing, cx, tip, stroke, Color::WHITE);
 }
 
 pub fn wide(text: &str) -> Vec<u16> {

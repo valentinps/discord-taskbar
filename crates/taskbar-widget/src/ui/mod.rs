@@ -55,6 +55,8 @@ pub const WM_APP_WIDGET_CURSOR: u32 = WM_APP + 9;
 pub const WM_APP_WIDGET_HOVER: u32 = WM_APP + 10;
 /// The pointer left the widget entirely.
 pub const WM_APP_WIDGET_LEAVE: u32 = WM_APP + 11;
+/// An update has been downloaded and is ready to install.
+pub const WM_APP_UPDATE_READY: u32 = WM_APP + 12;
 
 /// Posts a bare message to a window from any thread.
 ///
