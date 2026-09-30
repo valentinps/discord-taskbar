@@ -330,6 +330,7 @@ pub fn fields() -> Vec<Field> {
             ["local_mute", "volume_reset", "none"],
         ),
         Field::toggle("What to show", "Server icon", p("show_guild_icon")),
+        Field::number("What to show", "Server icon size", p("guild_icon_size"), 8, 64),
         Field::toggle("What to show", "Server name", p("show_guild_name")),
         Field::toggle(
             "What to show",
