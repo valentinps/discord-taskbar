@@ -836,10 +836,17 @@ impl App {
                 fields.extend(integration.settings_fields());
                 (
                     integration.settings_intro(),
-                    format!("{} Taskbar — Settings", integration.name()),
+                    format!(
+                        "{} Taskbar v{} — Settings",
+                        integration.name(),
+                        env!("CARGO_PKG_VERSION")
+                    ),
                 )
             }
-            None => (None, "Taskbar — Settings".to_string()),
+            None => (
+                None,
+                format!("Taskbar v{} — Settings", env!("CARGO_PKG_VERSION")),
+            ),
         };
 
         settings::open(
@@ -1383,7 +1390,11 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM)
             WM_APP_WIDGET_LEAVE => {
                 let input = take_widget_input(wparam.0);
                 with_app(|app| {
-                    app.hide_popup();
+                    // Not proof the pointer went anywhere: redrawing the widget
+                    // under a still cursor sends one too, which hid the volume
+                    // readout mid-scroll every time somebody started or
+                    // stopped talking. Ask where the pointer really is.
+                    app.dismiss_meter_if_unhovered(None, None);
                     if let Some(input) = input {
                         app.dispatch_gesture(input.widget, Gesture::Leave, input.point);
                     }

@@ -430,12 +430,10 @@ impl Integration for Discord {
         view::blocks(&self.status, theme, &self.settings)
     }
 
+    /// Which version is running, which is the thing worth knowing from the
+    /// tray. The widget itself already says where you are.
     fn tooltip(&self) -> String {
-        if self.status.is_connected() {
-            format!("Discord Taskbar — {}", self.status.location_label())
-        } else {
-            "Discord Taskbar — not in voice".to_string()
-        }
+        format!("Discord Taskbar v{}", env!("CARGO_PKG_VERSION"))
     }
 
     fn on_interaction(&mut self, interaction: Interaction, ui: &mut dyn Ui) {
