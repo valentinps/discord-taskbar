@@ -103,9 +103,11 @@ pub fn install(options: &Options) -> Report {
     let mut report = Report::default();
 
     // An upgrade over a running copy would fail on a sharing violation, so
-    // close the old one first. Only processes running out of the target
-    // folder are touched; a build running from somewhere else is left alone.
-    if stop_running(&options.directory) {
+    // close the old one first — and not only one in the target folder. A copy
+    // running from anywhere else holds the single-instance lock, so the new
+    // one would start, find it, and quietly exit, leaving the old version
+    // (and its old settings window) as the one on screen.
+    if stop_running(None) {
         report.ok("Closed the running copy");
     }
 
@@ -165,7 +167,9 @@ pub fn install(options: &Options) -> Report {
 pub fn uninstall(directory: &Path, purge: bool) -> Report {
     let mut report = Report::default();
 
-    if stop_running(directory) {
+    // Only the copy being removed; one running from elsewhere is not ours to
+    // close.
+    if stop_running(Some(directory)) {
         report.ok("Closed the running copy");
     }
 
@@ -202,10 +206,11 @@ pub fn uninstall(directory: &Path, purge: bool) -> Report {
     report
 }
 
-/// Terminate any copy of the app running out of `directory`.
+/// Terminate every running copy of the app, or with `directory`, only the
+/// ones running out of it.
 ///
 /// Returns whether anything was actually closed.
-fn stop_running(directory: &Path) -> bool {
+fn stop_running(directory: Option<&Path>) -> bool {
     let target = EXE_NAME.to_lowercase();
     let mut stopped = false;
 
@@ -236,7 +241,7 @@ fn stop_running(directory: &Path) -> bool {
     stopped
 }
 
-fn kill_if_inside(pid: u32, directory: &Path) -> bool {
+fn kill_if_inside(pid: u32, directory: Option<&Path>) -> bool {
     unsafe {
         let access = PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_TERMINATE;
         let Ok(process) = OpenProcess(access, false, pid) else {
@@ -254,10 +259,15 @@ fn kill_if_inside(pid: u32, directory: &Path) -> bool {
         .is_ok()
         .then(|| String::from_utf16_lossy(&buffer[..length as usize]));
 
-        let prefix = directory.to_string_lossy().to_lowercase();
-        let inside = image
-            .map(|p| p.to_lowercase().starts_with(&prefix))
-            .unwrap_or(false);
+        let inside = match directory {
+            Some(directory) => {
+                let prefix = directory.to_string_lossy().to_lowercase();
+                image
+                    .map(|p| p.to_lowercase().starts_with(&prefix))
+                    .unwrap_or(false)
+            }
+            None => true,
+        };
 
         if inside {
             let _ = TerminateProcess(process, 0);

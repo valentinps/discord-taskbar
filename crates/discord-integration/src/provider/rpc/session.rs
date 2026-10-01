@@ -178,6 +178,35 @@ fn seed(
     Ok(())
 }
 
+/// Re-read the selected channel after being removed from `left`.
+///
+/// The removal can reach us a moment before Discord's own idea of the selected
+/// channel catches up, in which case the first read still answers `left`. One
+/// short retry covers that without leaving the widget on a channel we know we
+/// are no longer in.
+fn reseed_after_leaving(
+    client: &mut RpcClient,
+    subs: &mut events::Subscriptions,
+    status: &mut VoiceStatus,
+    self_id: &str,
+    left: Option<&str>,
+) -> Result<()> {
+    let self_state = status.self_state;
+    for attempt in 0..2 {
+        if attempt > 0 {
+            std::thread::sleep(Duration::from_millis(400));
+        }
+        seed(client, subs, status, self_id)?;
+        if status.channel_id.as_deref() != left || left.is_none() {
+            break;
+        }
+    }
+    // Mute/deafen survive changing or leaving a call, as they do for
+    // VOICE_CHANNEL_SELECT; seeding from nothing would reset them.
+    status.self_state = self_state;
+    Ok(())
+}
+
 /// Fold one event into `status`. Returns whether anything visible changed.
 fn apply(
     client: &mut RpcClient,
@@ -244,6 +273,17 @@ fn apply(
             let Some(user_id) = event.data.pointer("/user/id").and_then(Value::as_str) else {
                 return Ok(false);
             };
+
+            // Being moved or disconnected by someone else sends no
+            // VOICE_CHANNEL_SELECT — that only fires for a channel you picked
+            // yourself. All that arrives is this channel saying you left it,
+            // so ask Discord where you are now: a new channel, or none.
+            if user_id == self_id {
+                let left = status.channel_id.clone();
+                reseed_after_leaving(client, subs, status, self_id, left.as_deref())?;
+                return Ok(true);
+            }
+
             let before = status.participants.len();
             status.participants.retain(|p| p.user_id != user_id);
             Ok(status.participants.len() != before)
