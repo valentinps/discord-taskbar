@@ -111,6 +111,9 @@ struct App {
     tray: Option<Tray>,
     /// A downloaded update, offered in the tray until it is installed.
     update: Option<crate::update::Ready>,
+    /// The integration asked for a redraw while it was out of `self`; done
+    /// once it is back. See [`App::dispatch`].
+    redraw_requested: bool,
 }
 
 impl App {
@@ -142,6 +145,7 @@ impl App {
             popup_canvas: None,
             tray,
             update: None,
+            redraw_requested: false,
         }
     }
 
@@ -150,6 +154,11 @@ impl App {
     /// The integration is a field of `App` and the `Ui` borrows `App`, so the
     /// two cannot be held at once. Taking it out for the duration is what lets
     /// an integration act on the widget while it is deciding what to do.
+    ///
+    /// A redraw it asks for waits until the integration is back. Drawn while
+    /// it is out, the widget has no blocks, reads as idle and hides — which
+    /// flickered the widget on every wheel notch until Discord's own update
+    /// arrived and redrew it.
     fn dispatch(
         &mut self,
         widget: Option<HWND>,
@@ -163,6 +172,10 @@ impl App {
             action(integration.as_mut(), &mut ui);
         }
         self.integration = Some(integration);
+
+        if std::mem::take(&mut self.redraw_requested) {
+            self.refresh();
+        }
     }
 
     /// What the integration wants drawn right now.
@@ -1237,7 +1250,7 @@ impl Ui for HostUi<'_> {
     }
 
     fn redraw(&mut self) {
-        self.app.refresh();
+        self.app.redraw_requested = true;
     }
 
     fn theme(&self) -> &Theme {

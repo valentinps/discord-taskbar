@@ -214,7 +214,10 @@ pub trait Ui {
     /// rather than merely closing it.
     fn block_at(&mut self, screen: POINT) -> Option<BlockId>;
 
-    /// Redraw every widget now.
+    /// Redraw every widget as soon as the current call returns.
+    ///
+    /// Not immediately: the widget is drawn from [`Integration::blocks`],
+    /// which cannot be asked while the integration is in the middle of a call.
     fn redraw(&mut self);
 
     /// The colours and metrics in force.
